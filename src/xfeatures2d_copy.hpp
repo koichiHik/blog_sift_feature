@@ -55,34 +55,34 @@ using namespace cv;
 
 class SIFT {
  public:
-  explicit SIFT(int nfeatures = 0, int nOctaveLayers = 3, double contrastThreshold = 0.04,
-                double edgeThreshold = 10, double sigma = 1.6);
+  explicit SIFT(int num_features = 0, int num_split_in_octave = 3, double contrast_threshold = 0.04,
+                double edge_threshold = 10, double sigma = 1.6);
 
-  void detect(InputArray image, std::vector<KeyPoint>& keypoints, InputArray mask = noArray());
+  void Detect(cv::Mat& image, std::vector<KeyPoint>& keypoints);
 
-  void compute(InputArray image, std::vector<KeyPoint>& keypoints, OutputArray descriptors);
-
-  /** Detects keypoints and computes the descriptors */
-  void detectAndCompute(InputArray image, InputArray mask, std::vector<KeyPoint>& keypoints,
-                        OutputArray descriptors, bool useProvidedKeypoints = false);
+  void Compute(cv::Mat& image, std::vector<KeyPoint>& keypoints, cv::Mat& descriptors);
 
  protected:
-  void buildGaussianPyramid(const Mat& base, std::vector<Mat>& pyr, int nOctaves) const;
+  void BuildGaussianPyramid(const Mat& base, std::vector<Mat>& pyr, int nOctaves,
+                            bool debug_display = false) const;
 
-  void buildDoGPyramid(const std::vector<Mat>& gpyr, std::vector<Mat>& dogpyr) const;
+  void BuildDifferenceOfGaussianPyramid(const std::vector<Mat>& gpyr, std::vector<Mat>& dogpyr,
+                                        bool debug_display = false) const;
 
-  void findScaleSpaceExtrema(const std::vector<Mat>& gauss_pyr, const std::vector<Mat>& dog_pyr,
+  void FindScaleSpaceExtrema(const std::vector<Mat>& gauss_pyr, const std::vector<Mat>& dog_pyr,
                              std::vector<KeyPoint>& keypoints) const;
 
-  int descriptorSize() const;
-  int descriptorType() const;
-  int defaultNorm() const;
+  int DescriptorSize() const;
+  int DescriptorType() const;
+  int DefaultNorm() const;
 
  protected:
-  int nfeatures;
-  int nOctaveLayers;
-  double contrastThreshold;
-  double edgeThreshold;
+  int num_features_;
+  int num_split_in_octave_;
+  int num_gaussian_in_octave_;
+  int num_diff_of_gaussian_in_octave_;
+  double contrast_threshold_;
+  double edge_threshold_;
   double sigma;
 };
 
