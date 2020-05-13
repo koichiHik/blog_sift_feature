@@ -12,7 +12,7 @@ FIND_PACKAGE(Gflags)
 FIND_PACKAGE(Eigen3)
 
 set(TARGET "sift_test")
-set(SRC src/sift_test.cc src/sift_copy.cc)
+set(SRC src/sift_test.cc src/sift_copy.cc src/sift_copy_org.cc)
 
 # Generate Exe Files
 add_executable(${TARGET} ${SRC})

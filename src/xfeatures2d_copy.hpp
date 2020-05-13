@@ -40,6 +40,9 @@
 //
 //M*/
 
+#ifndef __OPENCV_COPY_XFEATURES2D_FEATURES_2D_HPP__
+#define __OPENCV_COPY_XFEATURES2D_FEATURES_2D_HPP__
+
 // STL
 #include <iostream>
 #include <string>
@@ -53,14 +56,20 @@ namespace cv_copy {
 
 using namespace cv;
 
+class SiftKeyPoint : public KeyPoint {
+ public:
+  SiftKeyPoint() : layer(0){};
+  int layer;
+};
+
 class SIFT {
  public:
   explicit SIFT(int num_features = 0, int num_split_in_octave = 3, double contrast_threshold = 0.04,
                 double edge_threshold = 10, double sigma = 1.6);
 
-  void Detect(cv::Mat& image, std::vector<KeyPoint>& keypoints);
+  void Detect(cv::Mat& image, std::vector<SiftKeyPoint>& keypoints);
 
-  void Compute(cv::Mat& image, std::vector<KeyPoint>& keypoints, cv::Mat& descriptors);
+  void Compute(cv::Mat& image, std::vector<SiftKeyPoint>& keypoints, cv::Mat& descriptors);
 
  protected:
   void BuildGaussianPyramid(const Mat& base, std::vector<Mat>& pyr, int nOctaves,
@@ -70,7 +79,7 @@ class SIFT {
                                         bool debug_display = false) const;
 
   void FindScaleSpaceExtrema(const std::vector<Mat>& gauss_pyr, const std::vector<Mat>& dog_pyr,
-                             std::vector<KeyPoint>& keypoints) const;
+                             std::vector<SiftKeyPoint>& keypoints) const;
 
   int DescriptorSize() const;
   int DescriptorType() const;
@@ -87,3 +96,5 @@ class SIFT {
 };
 
 }  // namespace cv_copy
+
+#endif

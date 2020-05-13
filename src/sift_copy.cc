@@ -102,6 +102,9 @@
 //    SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 \**********************************************************************************************/
 
+// STL
+#include <iomanip>
+
 // OpenCV
 #include <opencv2/core.hpp>
 #include <opencv2/core/hal/hal.hpp>
@@ -161,13 +164,6 @@ static const float SIFT_INT_DESCR_FCTR = 512.f;
 typedef float sift_wt;
 static const int SIFT_FIXPT_SCALE = 1;
 
-static inline void UnpackOctave(const KeyPoint& kpt, int& octave, int& layer, float& scale) {
-  octave = kpt.octave & 255;
-  layer = (kpt.octave >> 8) & 255;
-  octave = octave < 128 ? octave : (-128 | octave);
-  scale = octave >= 0 ? 1.f / (1 << octave) : (float)(1 << -octave);
-}
-
 static Mat CreateInitialImage(const Mat& img, bool doubleImageSize, float sigma) {
   Mat gray, gray_fpt;
   if (img.channels() == 3 || img.channels() == 4) {
@@ -215,7 +211,8 @@ struct KeyPoint12_LessThan {
   }
 };
 
-static void RemoveDuplicateSorted(std::vector<KeyPoint>& keypoints) {
+template <typename T>
+static void RemoveDuplicateSorted(std::vector<T>& keypoints) {
   int i, j, n = (int)keypoints.size();
 
   if (n < 2) {
@@ -225,8 +222,8 @@ static void RemoveDuplicateSorted(std::vector<KeyPoint>& keypoints) {
   std::sort(keypoints.begin(), keypoints.end(), KeyPoint12_LessThan());
 
   for (i = 0, j = 1; j < n; ++j) {
-    const KeyPoint& kp1 = keypoints[i];
-    const KeyPoint& kp2 = keypoints[j];
+    const T& kp1 = keypoints[i];
+    const T& kp2 = keypoints[j];
 
     // If two keypoints have same x, y, size and angle, exclude.
     if (kp1.pt.x != kp2.pt.x || kp1.pt.y != kp2.pt.y || kp1.size != kp2.size ||
@@ -250,7 +247,8 @@ struct KeypointResponseGreater {
 };
 
 // Takes keypoints and culls them by the responce.
-void RetainBest(std::vector<KeyPoint>& keypoints, int n_points) {
+template <typename T>
+void RetainBest(std::vector<T>& keypoints, int n_points) {
   // If the current keypoints number is below n_points, do nothing.
   if (n_points >= 0 && keypoints.size() > (size_t)n_points) {
     if (n_points == 0) {
@@ -263,7 +261,7 @@ void RetainBest(std::vector<KeyPoint>& keypoints, int n_points) {
     // This is the boundary response, and in the case of FAST may be ambiguous
     float ambiguous_response = keypoints[n_points - 1].response;
     // Use std::partition to grab all of the keypoints with the boundary response.
-    std::vector<KeyPoint>::const_iterator new_end =
+    typename std::vector<T>::const_iterator new_end =
         std::partition(keypoints.begin() + n_points, keypoints.end(),
                        KeypointResponseGreaterThanThreshold(ambiguous_response));
     // resize the keypoints, given this new end point. nth_element and partition reordered the
@@ -367,8 +365,12 @@ static float ComputeOrientationHistogram(const Mat& img, const Point2i& pt, int 
     k = 0;
     for (; k < len; k++) {
       int bin = cvRound((num_hist_bins / 360.f) * Ori[k]);
-      if (bin >= num_hist_bins) bin -= num_hist_bins;
-      if (bin < 0) bin += num_hist_bins;
+      if (bin >= num_hist_bins) {
+        bin -= num_hist_bins;
+      }
+      if (bin < 0) {
+        bin += num_hist_bins;
+      }
       temphist[bin] += W[k] * Mag[k];
     }
 
@@ -448,7 +450,6 @@ static bool RefineKeyPointLocationIntoSubPixel(
     Matx33f H = ComputeHessianOfDoG(X[1], X[0], second_deriv_scale, cross_deriv_scale, prev_dog,
                                     mid_dog, next_dog);
     dX = -H.solve(dD, DECOMP_LU);
-
     if (std::abs(dX[0]) < 0.5f && std::abs(dX[1]) < 0.5f && std::abs(dX[2]) < 0.5f) {
       break;
     }
@@ -516,7 +517,7 @@ static bool IsKeyPointWithEnoughContrastOnNonEdge(
 // accuracy to form an image feature. Rejects features with low contrast.
 // Based on Section 4 of Lowe's paper.
 static bool RefineLocalExtremaIntoSubPixel(const std::vector<Mat>& diff_of_gaussian_pyr,
-                                           KeyPoint& keypoint, int octv, int& layer, int& row,
+                                           SiftKeyPoint& keypoint, int octv, int& layer, int& row,
                                            int& col, int num_split_in_octave,
                                            float contrast_threshold, float edge_threshold,
                                            float sigma) {
@@ -551,7 +552,9 @@ static bool RefineLocalExtremaIntoSubPixel(const std::vector<Mat>& diff_of_gauss
 
   keypoint.pt.x = (col + dX[0]) * (1 << octv);
   keypoint.pt.y = (row + dX[1]) * (1 << octv);
-  keypoint.octave = octv + (layer << 8) + (cvRound((dX[2] + 0.5) * 255) << 16);
+  keypoint.octave = octv;
+  keypoint.layer = layer;
+
   keypoint.size = sigma * powf(2.f, (layer + dX[2]) / num_split_in_octave) * (1 << octv) * 2;
   keypoint.response = std::abs(contrast);
 
@@ -561,12 +564,12 @@ static bool RefineLocalExtremaIntoSubPixel(const std::vector<Mat>& diff_of_gauss
 template <typename T>
 static T NormalizeValueForHistBins(const T value, const int num_hist_bins) {
   T normalized_value = value;
-  T casted_num_hist_bins = static_cast<T>(num_hist_bins);
+  // T casted_num_hist_bins = static_cast<T>(num_hist_bins);
 
   if (normalized_value < 0) {
-    normalized_value = normalized_value + static_cast<T>(casted_num_hist_bins);
-  } else if (casted_num_hist_bins < normalized_value) {
-    normalized_value = normalized_value - static_cast<T>(casted_num_hist_bins);
+    normalized_value = normalized_value + num_hist_bins;
+  } else if (num_hist_bins <= normalized_value) {
+    normalized_value = normalized_value - num_hist_bins;
   }
   return normalized_value;
 }
@@ -574,10 +577,11 @@ static T NormalizeValueForHistBins(const T value, const int num_hist_bins) {
 static void ComputeOrientationForKeyPoint(const int oct_idx_, const int num_split_in_octave_,
                                           const int cand_row, const int cand_col, const int layer,
                                           const std::vector<Mat> gaussian_pyramid_,
-                                          const int num_hist_bins, float* hist, KeyPoint& kpt,
-                                          std::vector<KeyPoint>* tls_kpts) {
+                                          const int num_hist_bins, float* hist, SiftKeyPoint& kpt,
+                                          std::vector<SiftKeyPoint>* tls_kpts) {
   // Compute orientation.
   float scl_octv = kpt.size * 0.5f / (1 << oct_idx_);
+
   float orientation_max_val = ComputeOrientationHistogram(
       gaussian_pyramid_[oct_idx_ * (num_split_in_octave_ + 3) + layer], Point2i(cand_col, cand_row),
       cvRound(SIFT_ORI_RADIUS * scl_octv), SIFT_ORI_SIG_FCTR * scl_octv, hist, num_hist_bins);
@@ -599,16 +603,16 @@ static void ComputeOrientationForKeyPoint(const int oct_idx_, const int num_spli
 
     // Parabora fitting.
     float decimal_bin = cur_bin + 0.5f * (hist[left_bin] - hist[right_bin]) /
-                                      (hist[left_bin] + hist[right_bin] - 2 * hist[cur_bin]);
+                                      (hist[left_bin] - 2 * hist[cur_bin] + hist[right_bin]);
     decimal_bin = NormalizeValueForHistBins(decimal_bin, num_hist_bins);
-
     // Coordinate transform and conversion from bin to angle.
     float bin_resolution = (float)(360.f / num_hist_bins);
     kpt.angle = 360.f - bin_resolution * decimal_bin;
+
     if (std::abs(kpt.angle - 360.f) < FLT_EPSILON) {
       kpt.angle = 0.f;
     }
-    tls_kpts->push_back(kpt);
+    { tls_kpts->push_back(kpt); }
   }
 }
 
@@ -619,7 +623,7 @@ class FindScaleSpaceExtremaComputer : public ParallelLoopBody {
                                 double edge_threshold, double sigma,
                                 const std::vector<Mat>& gaussian_pyramid,
                                 const std::vector<Mat>& diff_of_gaussian_pyramid,
-                                TLSData<std::vector<KeyPoint> >& _tls_kpts_struct)
+                                TLSData<std::vector<SiftKeyPoint> >& _tls_kpts_struct)
 
       : oct_idx_(oct_idx),
         split_idx_(split_idx),
@@ -643,11 +647,11 @@ class FindScaleSpaceExtremaComputer : public ParallelLoopBody {
     const Mat& img = diff_of_gaussian_pyramid_[dog_idx_];
     const Mat& next = diff_of_gaussian_pyramid_[dog_idx_ + 1];
 
-    std::vector<KeyPoint>* tls_kpts = tls_kpts_struct.get();
+    std::vector<SiftKeyPoint>* tls_kpts = tls_kpts_struct.get();
 
     static const int num_hist_bins = SIFT_ORI_HIST_BINS;
     float hist[num_hist_bins];
-    KeyPoint kpt;
+    SiftKeyPoint kpt;
     // Outer loop is for row.
     for (int row = begin; row < end; row++) {
       const sift_wt* prevptr = prev.ptr<sift_wt>(row);
@@ -728,7 +732,7 @@ class FindScaleSpaceExtremaComputer : public ParallelLoopBody {
   double sigma_;
   const std::vector<Mat>& gaussian_pyramid_;
   const std::vector<Mat>& diff_of_gaussian_pyramid_;
-  TLSData<std::vector<KeyPoint> >& tls_kpts_struct;
+  TLSData<std::vector<SiftKeyPoint> >& tls_kpts_struct;
 };
 
 static void ComputeSIFTDescriptor(const Mat& img, Point2f ptf, float ori, float scl, int d, int n,
@@ -858,8 +862,9 @@ static void ComputeSIFTDescriptor(const Mat& img, Point2f ptf, float ori, float 
 
 class ComputeDescriptorComputer : public ParallelLoopBody {
  public:
-  ComputeDescriptorComputer(const std::vector<Mat>& _gpyr, const std::vector<KeyPoint>& _keypoints,
-                            Mat& _descriptors, int num_split_in_octave, int _firstOctave)
+  ComputeDescriptorComputer(const std::vector<Mat>& _gpyr,
+                            const std::vector<SiftKeyPoint>& _keypoints, Mat& _descriptors,
+                            int num_split_in_octave, int _firstOctave)
       : gpyr(_gpyr),
         keypoints(_keypoints),
         descriptors(_descriptors),
@@ -873,15 +878,11 @@ class ComputeDescriptorComputer : public ParallelLoopBody {
     static const int d = SIFT_DESCR_WIDTH, n = SIFT_DESCR_HIST_BINS;
 
     for (int i = begin; i < end; i++) {
-      KeyPoint kpt = keypoints[i];
-      int octave, layer;
-      float scale;
-      UnpackOctave(kpt, octave, layer, scale);
-      CV_Assert(octave >= firstOctave && layer <= num_split_in_octave_ + 2);
+      SiftKeyPoint kpt = keypoints[i];
+      float scale = std::pow(2.0, -kpt.octave);
       float size = kpt.size * scale;
       Point2f ptf(kpt.pt.x * scale, kpt.pt.y * scale);
-      const Mat& img = gpyr[(octave - firstOctave) * (num_split_in_octave_ + 3) + layer];
-
+      const Mat& img = gpyr[(kpt.octave - firstOctave) * (num_split_in_octave_ + 3) + kpt.layer];
       float angle = 360.f - kpt.angle;
       if (std::abs(angle - 360.f) < FLT_EPSILON) angle = 0.f;
       ComputeSIFTDescriptor(img, ptf, angle, size * 0.5f, d, n, descriptors.ptr<float>((int)i));
@@ -890,14 +891,14 @@ class ComputeDescriptorComputer : public ParallelLoopBody {
 
  private:
   const std::vector<Mat>& gpyr;
-  const std::vector<KeyPoint>& keypoints;
+  const std::vector<SiftKeyPoint>& keypoints;
   Mat& descriptors;
   int num_split_in_octave_;
   int firstOctave;
 };
 
 static void ComputeDescriptors(const std::vector<Mat>& gaussian_pyramid,
-                               const std::vector<KeyPoint>& keypoints, Mat& descriptors,
+                               const std::vector<SiftKeyPoint>& keypoints, Mat& descriptors,
                                int num_split_in_octave, int first_octave) {
   // Parallelize with respect to keypoints.
   parallel_for_(Range(0, static_cast<int>(keypoints.size())),
@@ -915,16 +916,16 @@ SIFT::SIFT(int num_features, int num_split_in_octave, double contrast_threshold,
       edge_threshold_(edge_threshold),
       sigma(_sigma) {}
 
-void SIFT::Detect(cv::Mat& image, std::vector<KeyPoint>& keypoints) {
+void SIFT::Detect(cv::Mat& image, std::vector<SiftKeyPoint>& keypoints) {
   int first_octave_idx = -1;
-  bool double_image_size = true;
 
   // Initialize Image.
+  bool double_image_size = true;
   Mat base_image = CreateInitialImage(image, double_image_size, (float)sigma);
 
   // Compute number of octave that is solely computed from image size.
   double log2_num = std::log((double)std::min(base_image.cols, base_image.rows)) / std::log(2.);
-  int num_octaves = cvFloor(log2_num - 1) + 1;
+  int num_octaves = cvRound(log2_num - 2) + 1;
 
   // Build Gaussian Pyramid.
   std::vector<Mat> gaussian_pyr;
@@ -947,28 +948,24 @@ void SIFT::Detect(cv::Mat& image, std::vector<KeyPoint>& keypoints) {
 
   // Update keypoints.
   for (size_t i = 0; i < keypoints.size(); i++) {
-    KeyPoint& kpt = keypoints[i];
-    float scale = 1.0f / 2.0f;
-    kpt.octave = (kpt.octave & ~255) | ((kpt.octave + first_octave_idx) & 255);
+    SiftKeyPoint& kpt = keypoints[i];
+    float scale = std::pow(2.0, first_octave_idx);
+    kpt.octave = kpt.octave + first_octave_idx;
     kpt.pt *= scale;
     kpt.size *= scale;
   }
 }
 
-void SIFT::Compute(cv::Mat& image, std::vector<KeyPoint>& keypoints, cv::Mat& descriptors) {
+void SIFT::Compute(cv::Mat& image, std::vector<SiftKeyPoint>& keypoints, cv::Mat& descriptors) {
   int actual_num_octave = 0;
   int actual_num_splits = 0;
   int first_octave = 0;
   int last_octave = INT_MIN;
 
-  // Loop for keypoints to decode octave information.
-  for (size_t i = 0; i < keypoints.size(); i++) {
-    int octave, layer;
-    float scale;
-    UnpackOctave(keypoints[i], octave, layer, scale);
-    first_octave = std::min(first_octave, octave);
-    last_octave = std::max(last_octave, octave);
-    actual_num_splits = std::max(actual_num_splits, layer - 2);
+  for (auto kpt : keypoints) {
+    first_octave = std::min(first_octave, kpt.octave);
+    last_octave = std::max(last_octave, kpt.octave);
+    actual_num_splits = std::max(actual_num_splits, kpt.layer - 2);
   }
 
   first_octave = std::min(first_octave, 0);
@@ -1063,13 +1060,13 @@ void SIFT::BuildDifferenceOfGaussianPyramid(const std::vector<Mat>& gaussian_pyr
 // based on contrast and ratio of principal curvatures.
 void SIFT::FindScaleSpaceExtrema(const std::vector<Mat>& gaussian_pyramid,
                                  const std::vector<Mat>& diff_of_gaussian_pyramid,
-                                 std::vector<KeyPoint>& keypoints) const {
+                                 std::vector<SiftKeyPoint>& keypoints) const {
   const int num_octave = (int)gaussian_pyramid.size() / (num_gaussian_in_octave_);
   const int threshold =
       cvFloor(0.5 * contrast_threshold_ / num_split_in_octave_ * 255 * SIFT_FIXPT_SCALE);
 
   keypoints.clear();
-  TLSData<std::vector<KeyPoint> > tls_kpts_struct;
+  TLSData<std::vector<SiftKeyPoint> > tls_kpts_struct;
 
   // Loop for octave.
   for (int oct_idx = 0; oct_idx < num_octave; oct_idx++) {
@@ -1090,7 +1087,7 @@ void SIFT::FindScaleSpaceExtrema(const std::vector<Mat>& gaussian_pyramid,
     }
   }
 
-  std::vector<std::vector<KeyPoint>*> kpt_vecs;
+  std::vector<std::vector<SiftKeyPoint>*> kpt_vecs;
   tls_kpts_struct.gather(kpt_vecs);
   for (size_t i = 0; i < kpt_vecs.size(); ++i) {
     keypoints.insert(keypoints.end(), kpt_vecs[i]->begin(), kpt_vecs[i]->end());
