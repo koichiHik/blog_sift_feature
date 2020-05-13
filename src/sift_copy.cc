@@ -735,173 +735,232 @@ class FindScaleSpaceExtremaComputer : public ParallelLoopBody {
   TLSData<std::vector<SiftKeyPoint> >& tls_kpts_struct;
 };
 
-// Compute sift descriptor.
-static void ComputeSIFTDescriptor(const Mat& img, Point2f ptf, float angle, float scl,
-                                  int desc_patch_width, int desc_hist_bins, float* dst) {
-  Point2i pt(cvRound(ptf.x), cvRound(ptf.y));
-  float bin_resolution = desc_hist_bins / 360.f;
-  float exp_scale = -1.f / (desc_patch_width * desc_patch_width * 0.5f);
-  float hist_width = SIFT_DESCR_SCL_FCTR * scl;
-
-  // Clip the radius to the diagonal of the image to avoid autobuffer too large exception
-  int radius;
-  float *X, *Y, *Mag, *Ori, *W, *RBin, *CBin, *hist;
-  AutoBuffer<float> buf;
-  {
-    float sqrt2 = 1.4142135623730951f;
-    radius = cvRound(hist_width * sqrt2 * (desc_patch_width + 1) * 0.5f);
-    radius =
-        std::min(radius, (int)sqrt(((double)img.cols) * img.cols + ((double)img.rows) * img.rows));
-
-    int pre_patch_size = (radius * 2 + 1) * (radius * 2 + 1);
-    int desc_hist_size = (desc_patch_width + 2) * (desc_patch_width + 2) * (desc_hist_bins + 2);
-    buf.allocate(pre_patch_size * 6 + desc_hist_size);
-
-    // Elements to be calculated for each prepatch.
-    X = buf.data();
-    Y = X + pre_patch_size;
-    Mag = Y;
-    Ori = Mag + pre_patch_size;
-    W = Ori + pre_patch_size;
-    RBin = W + pre_patch_size;
-    CBin = RBin + pre_patch_size;
-
-    hist = CBin + pre_patch_size;
-
-    // Initialize histogram part of the buffer..　
-    for (int i = 0; i < desc_patch_width + 2; i++) {
-      for (int j = 0; j < desc_patch_width + 2; j++) {
-        for (int k = 0; k < desc_hist_bins + 2; k++) {
-          hist[(i * (desc_patch_width + 2) + j) * (desc_hist_bins + 2) + k] = 0.;
-        }
-      }
-    }
-  }
-
-  // Computation for pre-patch element.
+static int ComputeGradientForPrePatch(const float angle, const float pre_patch_radius,
+                                      const int final_patch_width, const float radius,
+                                      const Point2i pt, const Mat img, float X[], float Y[],
+                                      float RBin[], float CBin[], float Ori[], float Mag[],
+                                      float W[]) {
   int pix_cnt = 0;
   {
+    float exp_scale = -1.f / (final_patch_width * final_patch_width * 0.5f);
+
+    // For coordinate transform.
     float cos_t = cosf(angle * (float)(CV_PI / 180));
     float sin_t = sinf(angle * (float)(CV_PI / 180));
-    cos_t /= hist_width;
-    sin_t /= hist_width;
+
+    // Division by pre_patch_radius for length normalizing.
+    cos_t /= pre_patch_radius;
+    sin_t /= pre_patch_radius;
 
     // Compute gradients and weighted gradients of pixels around keypoint.
     for (int dy = -radius; dy <= radius; dy++) {
       for (int dx = -radius; dx <= radius; dx++) {
+        // Rotate for keypoint orientation.
+        float dx_rot = (dx * cos_t - dy * sin_t);
+        float dy_rot = (dx * sin_t + dy * cos_t);
+
         // Calculate sample's histogram array coords rotated relative to ori.
         // Subtract 0.5 so samples that fall e.g. in the center of row 1 (i.e.
         // r_rot = 1.5) have full weight placed in row 1 after interpolation.
 
-        // Rotate for keypoint orientation.
-        float dx_rot = dx * cos_t - dy * sin_t;
-        float dy_rot = dx * sin_t + dy * cos_t;
-
-        // Transform to final coordinate.
-        float cbin = dx_rot + desc_patch_width / 2 - 0.5f;
-        float rbin = dy_rot + desc_patch_width / 2 - 0.5f;
+        // Compute location in final patch coordinate.
+        float final_patch_col = dx_rot + final_patch_width / 2 - 0.5f;
+        float final_patch_row = dy_rot + final_patch_width / 2 - 0.5f;
         int row = pt.y + dy, col = pt.x + dx;
 
-        if (-1 < rbin && rbin < desc_patch_width && -1 < cbin && cbin < desc_patch_width &&
-            0 < row && row < img.rows - 1 && 0 < col && col < img.cols - 1) {
+        if (-1 < final_patch_row && final_patch_row < final_patch_width && -1 < final_patch_col &&
+            final_patch_col < final_patch_width && 0 < row && row < img.rows - 1 && 0 < col &&
+            col < img.cols - 1) {
           X[pix_cnt] = (float)(img.at<sift_wt>(row, col + 1) - img.at<sift_wt>(row, col - 1));
           Y[pix_cnt] = (float)(img.at<sift_wt>(row - 1, col) - img.at<sift_wt>(row + 1, col));
-          RBin[pix_cnt] = rbin;
-          CBin[pix_cnt] = cbin;
+          RBin[pix_cnt] = final_patch_row;
+          CBin[pix_cnt] = final_patch_col;
           W[pix_cnt] = (dx_rot * dx_rot + dy_rot * dy_rot) * exp_scale;
           pix_cnt++;
         }
       }
     }
-  }
-
-  {
     cv::hal::fastAtan2(Y, X, Ori, pix_cnt, true);
     cv::hal::magnitude32f(X, Y, Mag, pix_cnt);
     cv::hal::exp32f(W, W, pix_cnt);
+  }
+  return pix_cnt;
+}
 
-    for (int pix_idx = 0; pix_idx < pix_cnt; pix_idx++) {
-      float rbin = RBin[pix_idx];
-      float cbin = CBin[pix_idx];
-      float obin = (Ori[pix_idx] - angle) * bin_resolution;
-      float mag = Mag[pix_idx] * W[pix_idx];
+static void UpdateHistogramBasedOnTriLinearInterpolation(
+    const float Mag[], const float W[], const float RBin[], const float CBin[], const float Ori[],
+    const int pix_cnt, const float angle, const int final_ori_hist_bins,
+    const int final_patch_width, float hist[]) {
+  float bin_resolution = final_ori_hist_bins / 360.f;
 
-      int r0 = cvFloor(rbin);
-      int c0 = cvFloor(cbin);
-      int o0 = cvFloor(obin);
-      rbin -= r0;
-      cbin -= c0;
-      obin -= o0;
+  for (int pix_idx = 0; pix_idx < pix_cnt; pix_idx++) {
+    int row = cvFloor(RBin[pix_idx]);
+    int col = cvFloor(CBin[pix_idx]);
+    int ori = cvFloor((Ori[pix_idx] - angle) * bin_resolution);
 
-      if (o0 < 0) {
-        o0 += desc_hist_bins;
+    float d_row = RBin[pix_idx] - row;
+    float d_col = CBin[pix_idx] - col;
+    float d_ori = (Ori[pix_idx] - angle) * bin_resolution - ori;
+
+    // Angle normalization.
+    if (ori < 0) {
+      ori += final_ori_hist_bins;
+    }
+    if (final_ori_hist_bins <= ori) {
+      ori -= final_ori_hist_bins;
+    }
+
+    // Tri-linear interpolation before histogram update.
+    float mag = Mag[pix_idx] * W[pix_idx];
+    float v_r1 = mag * d_row;
+    float v_r0 = mag - v_r1;
+    float v_rc11 = v_r1 * d_col;
+    float v_rc10 = v_r1 - v_rc11;
+    float v_rc01 = v_r0 * d_col;
+    float v_rc00 = v_r0 - v_rc01;
+    float v_rco111 = v_rc11 * d_ori;
+    float v_rco110 = v_rc11 - v_rco111;
+    float v_rco101 = v_rc10 * d_ori;
+    float v_rco100 = v_rc10 - v_rco101;
+    float v_rco011 = v_rc01 * d_ori;
+    float v_rco010 = v_rc01 - v_rco011;
+    float v_rco001 = v_rc00 * d_ori;
+    float v_rco000 = v_rc00 - v_rco001;
+
+    // Histogram update.
+    int idx = ((row + 1) * (final_patch_width + 2) + col + 1) * (final_ori_hist_bins + 2) + ori;
+
+    // This buffer has 3 dimensional structure. (X x Y x Ori)
+    // (row, col, ori)
+    hist[idx] += v_rco000;
+    // (row, col, ori + 1)
+    hist[idx + 1] += v_rco001;
+    // (row, col + 1, ori)
+    hist[idx + (final_ori_hist_bins + 2)] += v_rco010;
+    // (row, col + 1, ori + 1)
+    hist[idx + (final_ori_hist_bins + 2) + 1] += v_rco011;
+    // (row + 1, col, ori)
+    hist[idx + (final_patch_width + 2) * (final_ori_hist_bins + 2)] += v_rco100;
+    // (row + 1, col, ori + 1)
+    hist[idx + (final_patch_width + 2) * (final_ori_hist_bins + 2) + 1] += v_rco101;
+    // (row + 1, col + 1, ori)
+    hist[idx + ((final_patch_width + 2) + 1) * (final_ori_hist_bins + 2)] += v_rco110;
+    // (row + 1, col + 1, ori + 1)
+    hist[idx + ((final_patch_width + 2) + 1) * (final_ori_hist_bins + 2) + 1] += v_rco111;
+  }
+}
+
+static void InitializeBuffer(const int pre_patch_size, const int final_patch_width,
+                             const int final_hist_size, const int final_ori_hist_bins,
+                             AutoBuffer<float>& buf, float** X, float** Y, float** Mag, float** Ori,
+                             float** W, float** RBin, float** CBin, float** hist) {
+  buf.allocate(pre_patch_size * 6 + final_hist_size);
+
+  // Elements to be calculated for each prepatch.
+  *X = buf.data();
+  *Y = *X + pre_patch_size;
+  *Mag = *Y;
+  *Ori = *Mag + pre_patch_size;
+  *W = *Ori + pre_patch_size;
+  *RBin = *W + pre_patch_size;
+  *CBin = *RBin + pre_patch_size;
+  *hist = *CBin + pre_patch_size;
+
+  // Initialize histogram part of the buffer..　
+  for (int row = 0; row < final_patch_width + 2; row++) {
+    for (int col = 0; col < final_patch_width + 2; col++) {
+      for (int ori = 0; ori < final_ori_hist_bins + 2; ori++) {
+        (*hist)[(row * (final_patch_width + 2) + col) * (final_ori_hist_bins + 2) + ori] = 0.f;
       }
-      if (o0 >= desc_hist_bins) {
-        o0 -= desc_hist_bins;
+    }
+  }
+}
+
+static void RefineHistogram(const int final_patch_width, const int final_ori_hist_bins, float* hist,
+                            float* dst) {
+  // Finalize histogram, since the orientation histograms are circular.
+  for (int row = 0; row < final_patch_width; row++) {
+    for (int col = 0; col < final_patch_width; col++) {
+      int idx = ((row + 1) * (final_patch_width + 2) + (col + 1)) * (final_ori_hist_bins + 2);
+
+      hist[idx] += hist[idx + final_ori_hist_bins];
+      hist[idx + 1] += hist[idx + final_ori_hist_bins + 1];
+
+      // Loop for orientation histogram of (row, col)
+      for (int ori = 0; ori < final_ori_hist_bins; ori++) {
+        dst[(row * final_patch_width + col) * final_ori_hist_bins + ori] = hist[idx + ori];
       }
-
-      // histogram update using tri-linear interpolation
-      float v_r1 = mag * rbin;
-      float v_r0 = mag - v_r1;
-      float v_rc11 = v_r1 * cbin;
-      float v_rc10 = v_r1 - v_rc11;
-      float v_rc01 = v_r0 * cbin;
-      float v_rc00 = v_r0 - v_rc01;
-      float v_rco111 = v_rc11 * obin;
-      float v_rco110 = v_rc11 - v_rco111;
-      float v_rco101 = v_rc10 * obin;
-      float v_rco100 = v_rc10 - v_rco101;
-      float v_rco011 = v_rc01 * obin;
-      float v_rco010 = v_rc01 - v_rco011;
-      float v_rco001 = v_rc00 * obin;
-      float v_rco000 = v_rc00 - v_rco001;
-
-      int idx = ((r0 + 1) * (desc_patch_width + 2) + c0 + 1) * (desc_hist_bins + 2) + o0;
-      hist[idx] += v_rco000;
-      hist[idx + 1] += v_rco001;
-      hist[idx + (desc_hist_bins + 2)] += v_rco010;
-      hist[idx + (desc_hist_bins + 3)] += v_rco011;
-      hist[idx + (desc_patch_width + 2) * (desc_hist_bins + 2)] += v_rco100;
-      hist[idx + (desc_patch_width + 2) * (desc_hist_bins + 2) + 1] += v_rco101;
-      hist[idx + (desc_patch_width + 3) * (desc_hist_bins + 2)] += v_rco110;
-      hist[idx + (desc_patch_width + 3) * (desc_hist_bins + 2) + 1] += v_rco111;
     }
   }
 
-  // finalize histogram, since the orientation histograms are circular
-  for (int i = 0; i < desc_patch_width; i++) {
-    for (int j = 0; j < desc_patch_width; j++) {
-      int idx = ((i + 1) * (desc_patch_width + 2) + (j + 1)) * (desc_hist_bins + 2);
-      hist[idx] += hist[idx + desc_hist_bins];
-      hist[idx + 1] += hist[idx + desc_hist_bins + 1];
-      for (int k = 0; k < desc_hist_bins; k++) {
-        dst[(i * desc_patch_width + j) * desc_hist_bins + k] = hist[idx + k];
+  // Refine histogram.
+  {
+    // Apply hysterisis thresholding and scale the result for easy converion to byte array.
+    int size = final_patch_width * final_patch_width * final_ori_hist_bins;
+
+    // Find thresh.
+    float thresh;
+    {
+      float total_norm = 0;
+      for (int k = 0; k < size; k++) {
+        total_norm += dst[k] * dst[k];
+      }
+      thresh = std::sqrt(total_norm) * SIFT_DESCR_MAG_THR;
+    }
+
+    // Normalize the result.
+    {
+      float total_norm = 0;
+      for (int k = 0; k < size; k++) {
+        float val = std::min(dst[k], thresh);
+        dst[k] = val;
+        total_norm += val * val;
+      }
+      total_norm = SIFT_INT_DESCR_FCTR / std::max(std::sqrt(total_norm), FLT_EPSILON);
+
+      for (int k = 0; k < size; k++) {
+        dst[k] = saturate_cast<uchar>(dst[k] * total_norm);
       }
     }
   }
-  // copy histogram to the descriptor,
-  // apply hysteresis thresholding
-  // and scale the result, so that it can be easily converted
-  // to byte array
-  float nrm2 = 0;
-  int len = desc_patch_width * desc_patch_width * desc_hist_bins;
-  for (int k = 0; k < len; k++) {
-    nrm2 += dst[k] * dst[k];
+}
+
+// Compute sift descriptor.
+static void ComputeSIFTDescriptor(const Mat& img, Point2f ptf, float angle, float scl,
+                                  int final_patch_width, int final_ori_hist_bins, float* dst) {
+  // Constant value cauculation.
+  int radius, pre_patch_size, final_hist_size;
+  float pre_patch_radius;
+  {
+    pre_patch_radius = SIFT_DESCR_SCL_FCTR * scl;
+    // Compute radius.
+    float sqrt2 = 1.4142135623730951f;
+    radius = cvRound(pre_patch_radius * sqrt2 * (final_patch_width + 1) * 0.5f);
+    // Clip the radius to the diagonal of the image to avoid autobuffer too large exception
+    radius =
+        std::min(radius, (int)sqrt(((double)img.cols) * img.cols + ((double)img.rows) * img.rows));
+    pre_patch_size = (radius * 2 + 1) * (radius * 2 + 1);
+    final_hist_size = (final_patch_width + 2) * (final_patch_width + 2) * (final_ori_hist_bins + 2);
   }
 
-  float thr = std::sqrt(nrm2) * SIFT_DESCR_MAG_THR;
+  // Prepare buffer.
+  AutoBuffer<float> buf;
+  float *X, *Y, *Mag, *Ori, *W, *RBin, *CBin, *hist;
+  InitializeBuffer(pre_patch_size, final_patch_width, final_hist_size, final_ori_hist_bins, buf, &X,
+                   &Y, &Mag, &Ori, &W, &RBin, &CBin, &hist);
 
-  nrm2 = 0;
-  for (int i = 0; i < len; i++) {
-    float val = std::min(dst[i], thr);
-    dst[i] = val;
-    nrm2 += val * val;
-  }
-  nrm2 = SIFT_INT_DESCR_FCTR / std::max(std::sqrt(nrm2), FLT_EPSILON);
+  // Computation for pre-patch element.
+  int pix_cnt = ComputeGradientForPrePatch(angle, pre_patch_radius, final_patch_width, radius,
+                                           Point2i(cvRound(ptf.x), cvRound(ptf.y)), img, X, Y, RBin,
+                                           CBin, Ori, Mag, W);
 
-  for (int k = 0; k < len; k++) {
-    dst[k] = saturate_cast<uchar>(dst[k] * nrm2);
-  }
+  // Histogram update based on tri-linear interpolation.
+  UpdateHistogramBasedOnTriLinearInterpolation(Mag, W, RBin, CBin, Ori, pix_cnt, angle,
+                                               final_ori_hist_bins, final_patch_width, hist);
+
+  // Refine histogram.
+  RefineHistogram(final_patch_width, final_ori_hist_bins, hist, dst);
+
 }  // namespace cv_copy
 
 class ComputeDescriptorComputer : public ParallelLoopBody {
