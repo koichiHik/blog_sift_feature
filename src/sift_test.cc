@@ -90,9 +90,12 @@ void TestSiftFeatures(cv::Mat& img) {
     sift_detector.Detect(img, keypoints);
     cv::Ptr<cv_copy::xfeatures2d::SIFT> cv_sift_detector = cv_copy::xfeatures2d::SIFT::create();
     cv_sift_detector->detect(img, cv_keypoints);
+
     if (!KeyPointsAreSame(cv_keypoints, keypoints)) {
       LOG(INFO) << "Two keypoints are different.";
     }
+
+    LOG(INFO) << "No of detected keypoints : " << keypoints.size();
   }
 
   cv::Mat cv_descriptors, descriptors;

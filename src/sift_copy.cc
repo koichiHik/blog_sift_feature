@@ -735,130 +735,174 @@ class FindScaleSpaceExtremaComputer : public ParallelLoopBody {
   TLSData<std::vector<SiftKeyPoint> >& tls_kpts_struct;
 };
 
-static void ComputeSIFTDescriptor(const Mat& img, Point2f ptf, float ori, float scl, int d, int n,
-                                  float* dst) {
-  Point pt(cvRound(ptf.x), cvRound(ptf.y));
-  float cos_t = cosf(ori * (float)(CV_PI / 180));
-  float sin_t = sinf(ori * (float)(CV_PI / 180));
-  float bins_per_rad = n / 360.f;
-  float exp_scale = -1.f / (d * d * 0.5f);
+// Compute sift descriptor.
+static void ComputeSIFTDescriptor(const Mat& img, Point2f ptf, float angle, float scl,
+                                  int desc_patch_width, int desc_hist_bins, float* dst) {
+  Point2i pt(cvRound(ptf.x), cvRound(ptf.y));
+  float bin_resolution = desc_hist_bins / 360.f;
+  float exp_scale = -1.f / (desc_patch_width * desc_patch_width * 0.5f);
   float hist_width = SIFT_DESCR_SCL_FCTR * scl;
-  int radius = cvRound(hist_width * 1.4142135623730951f * (d + 1) * 0.5f);
+
   // Clip the radius to the diagonal of the image to avoid autobuffer too large exception
-  radius =
-      std::min(radius, (int)sqrt(((double)img.cols) * img.cols + ((double)img.rows) * img.rows));
-  cos_t /= hist_width;
-  sin_t /= hist_width;
+  int radius;
+  float *X, *Y, *Mag, *Ori, *W, *RBin, *CBin, *hist;
+  AutoBuffer<float> buf;
+  {
+    float sqrt2 = 1.4142135623730951f;
+    radius = cvRound(hist_width * sqrt2 * (desc_patch_width + 1) * 0.5f);
+    radius =
+        std::min(radius, (int)sqrt(((double)img.cols) * img.cols + ((double)img.rows) * img.rows));
 
-  int i, j, k, len = (radius * 2 + 1) * (radius * 2 + 1), histlen = (d + 2) * (d + 2) * (n + 2);
-  int rows = img.rows, cols = img.cols;
+    int pre_patch_size = (radius * 2 + 1) * (radius * 2 + 1);
+    int desc_hist_size = (desc_patch_width + 2) * (desc_patch_width + 2) * (desc_hist_bins + 2);
+    buf.allocate(pre_patch_size * 6 + desc_hist_size);
 
-  AutoBuffer<float> buf(len * 6 + histlen);
-  float *X = buf.data(), *Y = X + len, *Mag = Y, *Ori = Mag + len, *W = Ori + len;
-  float *RBin = W + len, *CBin = RBin + len, *hist = CBin + len;
+    // Elements to be calculated for each prepatch.
+    X = buf.data();
+    Y = X + pre_patch_size;
+    Mag = Y;
+    Ori = Mag + pre_patch_size;
+    W = Ori + pre_patch_size;
+    RBin = W + pre_patch_size;
+    CBin = RBin + pre_patch_size;
 
-  for (i = 0; i < d + 2; i++) {
-    for (j = 0; j < d + 2; j++)
-      for (k = 0; k < n + 2; k++) hist[(i * (d + 2) + j) * (n + 2) + k] = 0.;
-  }
+    hist = CBin + pre_patch_size;
 
-  for (i = -radius, k = 0; i <= radius; i++)
-    for (j = -radius; j <= radius; j++) {
-      // Calculate sample's histogram array coords rotated relative to ori.
-      // Subtract 0.5 so samples that fall e.g. in the center of row 1 (i.e.
-      // r_rot = 1.5) have full weight placed in row 1 after interpolation.
-      float c_rot = j * cos_t - i * sin_t;
-      float r_rot = j * sin_t + i * cos_t;
-      float rbin = r_rot + d / 2 - 0.5f;
-      float cbin = c_rot + d / 2 - 0.5f;
-      int r = pt.y + i, c = pt.x + j;
-
-      if (rbin > -1 && rbin < d && cbin > -1 && cbin < d && r > 0 && r < rows - 1 && c > 0 &&
-          c < cols - 1) {
-        float dx = (float)(img.at<sift_wt>(r, c + 1) - img.at<sift_wt>(r, c - 1));
-        float dy = (float)(img.at<sift_wt>(r - 1, c) - img.at<sift_wt>(r + 1, c));
-        X[k] = dx;
-        Y[k] = dy;
-        RBin[k] = rbin;
-        CBin[k] = cbin;
-        W[k] = (c_rot * c_rot + r_rot * r_rot) * exp_scale;
-        k++;
+    // Initialize histogram part of the buffer..　
+    for (int i = 0; i < desc_patch_width + 2; i++) {
+      for (int j = 0; j < desc_patch_width + 2; j++) {
+        for (int k = 0; k < desc_hist_bins + 2; k++) {
+          hist[(i * (desc_patch_width + 2) + j) * (desc_hist_bins + 2) + k] = 0.;
+        }
       }
     }
+  }
 
-  len = k;
-  cv::hal::fastAtan2(Y, X, Ori, len, true);
-  cv::hal::magnitude32f(X, Y, Mag, len);
-  cv::hal::exp32f(W, W, len);
+  // Computation for pre-patch element.
+  int pix_cnt = 0;
+  {
+    float cos_t = cosf(angle * (float)(CV_PI / 180));
+    float sin_t = sinf(angle * (float)(CV_PI / 180));
+    cos_t /= hist_width;
+    sin_t /= hist_width;
 
-  k = 0;
-  for (; k < len; k++) {
-    float rbin = RBin[k], cbin = CBin[k];
-    float obin = (Ori[k] - ori) * bins_per_rad;
-    float mag = Mag[k] * W[k];
+    // Compute gradients and weighted gradients of pixels around keypoint.
+    for (int dy = -radius; dy <= radius; dy++) {
+      for (int dx = -radius; dx <= radius; dx++) {
+        // Calculate sample's histogram array coords rotated relative to ori.
+        // Subtract 0.5 so samples that fall e.g. in the center of row 1 (i.e.
+        // r_rot = 1.5) have full weight placed in row 1 after interpolation.
 
-    int r0 = cvFloor(rbin);
-    int c0 = cvFloor(cbin);
-    int o0 = cvFloor(obin);
-    rbin -= r0;
-    cbin -= c0;
-    obin -= o0;
+        // Rotate for keypoint orientation.
+        float dx_rot = dx * cos_t - dy * sin_t;
+        float dy_rot = dx * sin_t + dy * cos_t;
 
-    if (o0 < 0) o0 += n;
-    if (o0 >= n) o0 -= n;
+        // Transform to final coordinate.
+        float cbin = dx_rot + desc_patch_width / 2 - 0.5f;
+        float rbin = dy_rot + desc_patch_width / 2 - 0.5f;
+        int row = pt.y + dy, col = pt.x + dx;
 
-    // histogram update using tri-linear interpolation
-    float v_r1 = mag * rbin, v_r0 = mag - v_r1;
-    float v_rc11 = v_r1 * cbin, v_rc10 = v_r1 - v_rc11;
-    float v_rc01 = v_r0 * cbin, v_rc00 = v_r0 - v_rc01;
-    float v_rco111 = v_rc11 * obin, v_rco110 = v_rc11 - v_rco111;
-    float v_rco101 = v_rc10 * obin, v_rco100 = v_rc10 - v_rco101;
-    float v_rco011 = v_rc01 * obin, v_rco010 = v_rc01 - v_rco011;
-    float v_rco001 = v_rc00 * obin, v_rco000 = v_rc00 - v_rco001;
+        if (-1 < rbin && rbin < desc_patch_width && -1 < cbin && cbin < desc_patch_width &&
+            0 < row && row < img.rows - 1 && 0 < col && col < img.cols - 1) {
+          X[pix_cnt] = (float)(img.at<sift_wt>(row, col + 1) - img.at<sift_wt>(row, col - 1));
+          Y[pix_cnt] = (float)(img.at<sift_wt>(row - 1, col) - img.at<sift_wt>(row + 1, col));
+          RBin[pix_cnt] = rbin;
+          CBin[pix_cnt] = cbin;
+          W[pix_cnt] = (dx_rot * dx_rot + dy_rot * dy_rot) * exp_scale;
+          pix_cnt++;
+        }
+      }
+    }
+  }
 
-    int idx = ((r0 + 1) * (d + 2) + c0 + 1) * (n + 2) + o0;
-    hist[idx] += v_rco000;
-    hist[idx + 1] += v_rco001;
-    hist[idx + (n + 2)] += v_rco010;
-    hist[idx + (n + 3)] += v_rco011;
-    hist[idx + (d + 2) * (n + 2)] += v_rco100;
-    hist[idx + (d + 2) * (n + 2) + 1] += v_rco101;
-    hist[idx + (d + 3) * (n + 2)] += v_rco110;
-    hist[idx + (d + 3) * (n + 2) + 1] += v_rco111;
+  {
+    cv::hal::fastAtan2(Y, X, Ori, pix_cnt, true);
+    cv::hal::magnitude32f(X, Y, Mag, pix_cnt);
+    cv::hal::exp32f(W, W, pix_cnt);
+
+    for (int pix_idx = 0; pix_idx < pix_cnt; pix_idx++) {
+      float rbin = RBin[pix_idx];
+      float cbin = CBin[pix_idx];
+      float obin = (Ori[pix_idx] - angle) * bin_resolution;
+      float mag = Mag[pix_idx] * W[pix_idx];
+
+      int r0 = cvFloor(rbin);
+      int c0 = cvFloor(cbin);
+      int o0 = cvFloor(obin);
+      rbin -= r0;
+      cbin -= c0;
+      obin -= o0;
+
+      if (o0 < 0) {
+        o0 += desc_hist_bins;
+      }
+      if (o0 >= desc_hist_bins) {
+        o0 -= desc_hist_bins;
+      }
+
+      // histogram update using tri-linear interpolation
+      float v_r1 = mag * rbin;
+      float v_r0 = mag - v_r1;
+      float v_rc11 = v_r1 * cbin;
+      float v_rc10 = v_r1 - v_rc11;
+      float v_rc01 = v_r0 * cbin;
+      float v_rc00 = v_r0 - v_rc01;
+      float v_rco111 = v_rc11 * obin;
+      float v_rco110 = v_rc11 - v_rco111;
+      float v_rco101 = v_rc10 * obin;
+      float v_rco100 = v_rc10 - v_rco101;
+      float v_rco011 = v_rc01 * obin;
+      float v_rco010 = v_rc01 - v_rco011;
+      float v_rco001 = v_rc00 * obin;
+      float v_rco000 = v_rc00 - v_rco001;
+
+      int idx = ((r0 + 1) * (desc_patch_width + 2) + c0 + 1) * (desc_hist_bins + 2) + o0;
+      hist[idx] += v_rco000;
+      hist[idx + 1] += v_rco001;
+      hist[idx + (desc_hist_bins + 2)] += v_rco010;
+      hist[idx + (desc_hist_bins + 3)] += v_rco011;
+      hist[idx + (desc_patch_width + 2) * (desc_hist_bins + 2)] += v_rco100;
+      hist[idx + (desc_patch_width + 2) * (desc_hist_bins + 2) + 1] += v_rco101;
+      hist[idx + (desc_patch_width + 3) * (desc_hist_bins + 2)] += v_rco110;
+      hist[idx + (desc_patch_width + 3) * (desc_hist_bins + 2) + 1] += v_rco111;
+    }
   }
 
   // finalize histogram, since the orientation histograms are circular
-  for (i = 0; i < d; i++)
-    for (j = 0; j < d; j++) {
-      int idx = ((i + 1) * (d + 2) + (j + 1)) * (n + 2);
-      hist[idx] += hist[idx + n];
-      hist[idx + 1] += hist[idx + n + 1];
-      for (k = 0; k < n; k++) dst[(i * d + j) * n + k] = hist[idx + k];
+  for (int i = 0; i < desc_patch_width; i++) {
+    for (int j = 0; j < desc_patch_width; j++) {
+      int idx = ((i + 1) * (desc_patch_width + 2) + (j + 1)) * (desc_hist_bins + 2);
+      hist[idx] += hist[idx + desc_hist_bins];
+      hist[idx + 1] += hist[idx + desc_hist_bins + 1];
+      for (int k = 0; k < desc_hist_bins; k++) {
+        dst[(i * desc_patch_width + j) * desc_hist_bins + k] = hist[idx + k];
+      }
     }
+  }
   // copy histogram to the descriptor,
   // apply hysteresis thresholding
   // and scale the result, so that it can be easily converted
   // to byte array
   float nrm2 = 0;
-  len = d * d * n;
-  k = 0;
-  for (; k < len; k++) nrm2 += dst[k] * dst[k];
+  int len = desc_patch_width * desc_patch_width * desc_hist_bins;
+  for (int k = 0; k < len; k++) {
+    nrm2 += dst[k] * dst[k];
+  }
 
   float thr = std::sqrt(nrm2) * SIFT_DESCR_MAG_THR;
 
-  i = 0, nrm2 = 0;
-  for (; i < len; i++) {
+  nrm2 = 0;
+  for (int i = 0; i < len; i++) {
     float val = std::min(dst[i], thr);
     dst[i] = val;
     nrm2 += val * val;
   }
   nrm2 = SIFT_INT_DESCR_FCTR / std::max(std::sqrt(nrm2), FLT_EPSILON);
 
-  k = 0;
-  for (; k < len; k++) {
+  for (int k = 0; k < len; k++) {
     dst[k] = saturate_cast<uchar>(dst[k] * nrm2);
   }
-}
+}  // namespace cv_copy
 
 class ComputeDescriptorComputer : public ParallelLoopBody {
  public:
@@ -872,20 +916,24 @@ class ComputeDescriptorComputer : public ParallelLoopBody {
         firstOctave(_firstOctave) {}
 
   void operator()(const cv::Range& range) const {
-    const int begin = range.start;
-    const int end = range.end;
+    const int kpt_start = range.start;
+    const int kpt_end = range.end;
 
-    static const int d = SIFT_DESCR_WIDTH, n = SIFT_DESCR_HIST_BINS;
+    static const int desc_patch_width = SIFT_DESCR_WIDTH;
+    static const int desc_hist_bins = SIFT_DESCR_HIST_BINS;
 
-    for (int i = begin; i < end; i++) {
-      SiftKeyPoint kpt = keypoints[i];
+    for (int idx = kpt_start; idx < kpt_end; idx++) {
+      SiftKeyPoint kpt = keypoints[idx];
       float scale = std::pow(2.0, -kpt.octave);
       float size = kpt.size * scale;
       Point2f ptf(kpt.pt.x * scale, kpt.pt.y * scale);
       const Mat& img = gpyr[(kpt.octave - firstOctave) * (num_split_in_octave_ + 3) + kpt.layer];
       float angle = 360.f - kpt.angle;
-      if (std::abs(angle - 360.f) < FLT_EPSILON) angle = 0.f;
-      ComputeSIFTDescriptor(img, ptf, angle, size * 0.5f, d, n, descriptors.ptr<float>((int)i));
+      if (std::abs(angle - 360.f) < FLT_EPSILON) {
+        angle = 0.f;
+      }
+      float* p_desc = descriptors.ptr<float>((int)idx);
+      ComputeSIFTDescriptor(img, ptf, angle, size * 0.5f, desc_patch_width, desc_hist_bins, p_desc);
     }
   }
 
@@ -957,36 +1005,33 @@ void SIFT::Detect(cv::Mat& image, std::vector<SiftKeyPoint>& keypoints) {
 }
 
 void SIFT::Compute(cv::Mat& image, std::vector<SiftKeyPoint>& keypoints, cv::Mat& descriptors) {
-  int actual_num_octave = 0;
-  int actual_num_splits = 0;
+  // Initialization based on keypoints information.
   int first_octave = 0;
-  int last_octave = INT_MIN;
+  int total_octaves;
+  Mat base;
+  {
+    // Structure information extracted from keypoints.
+    int last_octave = INT_MIN;
+    for (auto kpt : keypoints) {
+      first_octave = std::min(first_octave, kpt.octave);
+      last_octave = std::max(last_octave, kpt.octave);
+    }
+    total_octaves = last_octave - first_octave + 1;
 
-  for (auto kpt : keypoints) {
-    first_octave = std::min(first_octave, kpt.octave);
-    last_octave = std::max(last_octave, kpt.octave);
-    actual_num_splits = std::max(actual_num_splits, kpt.layer - 2);
+    // Create initial image from the given.
+    base = CreateInitialImage(image, first_octave < 0, (float)sigma);
   }
-
-  first_octave = std::min(first_octave, 0);
-  CV_Assert(first_octave >= -1 && actual_num_splits <= num_split_in_octave_);
-  actual_num_octave = last_octave - first_octave + 1;
-
-  // Create initial image from the given.
-  Mat base = CreateInitialImage(image, first_octave < 0, (float)sigma);
-  int num_octave =
-      actual_num_octave > 0
-          ? actual_num_octave
-          : cvRound(std::log((double)std::min(base.cols, base.rows)) / std::log(2.) - 2) -
-                first_octave;
 
   // Build Gaussian Pyramid.
   std::vector<Mat> gaussian_pyramid;
-  BuildGaussianPyramid(base, gaussian_pyramid, num_octave);
+  { BuildGaussianPyramid(base, gaussian_pyramid, total_octaves); }
 
   // Compute descriptor for each keypoint.
-  descriptors.create((int)keypoints.size(), DescriptorSize(), CV_32F);
-  ComputeDescriptors(gaussian_pyramid, keypoints, descriptors, num_split_in_octave_, first_octave);
+  {
+    descriptors.create((int)keypoints.size(), DescriptorSize(), CV_32F);
+    ComputeDescriptors(gaussian_pyramid, keypoints, descriptors, num_split_in_octave_,
+                       first_octave);
+  }
 }
 
 void SIFT::BuildGaussianPyramid(const Mat& base_image, std::vector<Mat>& pyramid, int nOctaves,
