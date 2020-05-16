@@ -19,7 +19,7 @@
 
 // Original
 #include "sift.hpp"
-#include "xfeatures2d_copy_org.hpp"
+#include "sift_from_opencv.hpp"
 
 using namespace cv_copy;
 

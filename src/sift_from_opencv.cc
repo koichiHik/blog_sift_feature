@@ -114,7 +114,7 @@
 #include <glog/logging.h>
 
 // Original
-#include "xfeatures2d_copy_org.hpp"
+#include "sift_from_opencv.hpp"
 
 namespace cv_copy {
 namespace xfeatures2d {
