@@ -25,6 +25,8 @@ using namespace cv_copy;
 
 DEFINE_string(image_path, "", "Path to the image.");
 
+namespace {
+
 static void DisplayImage(const cv::Mat& img, const std::string& title, const int wait_time) {
   double min_val, max_val;
   cv::minMaxLoc(img, &min_val, &max_val);
@@ -90,17 +92,23 @@ bool DescriptorsAreSame(cv::Mat cv_descriptors, cv::Mat mod_descriptors) {
   return cv::countNonZero(comparison) == 0;
 }
 
-void TestSiftFeatures(cv::Mat& img) {
+void TestSiftFeatures(const std::string& image_path) {
   // cv::setNumThreads(0);
+
+  cv::Mat img = cv::imread(image_path);
 
   std::vector<SiftKeyPoint> keypoints;
   std::vector<cv::KeyPoint> cv_keypoints;
   {
+    // Run refactored SIFT detector.
     cv_copy::SIFT sift_detector;
     sift_detector.Detect(img, keypoints);
+
+    // Run original SIFT detector.
     cv::Ptr<cv_copy::xfeatures2d::SIFT> cv_sift_detector = cv_copy::xfeatures2d::SIFT::create();
     cv_sift_detector->detect(img, cv_keypoints);
 
+    // Check if the results are same.
     if (!KeyPointsAreSame(cv_keypoints, keypoints)) {
       LOG(INFO) << "Two keypoints are different.";
     }
@@ -110,15 +118,24 @@ void TestSiftFeatures(cv::Mat& img) {
 
   cv::Mat cv_descriptors, descriptors;
   {
+    // Run refactored sift descriptor.
     cv_copy::SIFT sift_detector;
     sift_detector.Compute(img, keypoints, descriptors);
+
+    // Run original sift descriptor.
     cv::Ptr<cv_copy::xfeatures2d::SIFT> cv_sift_detector = cv_copy::xfeatures2d::SIFT::create();
     cv_sift_detector->compute(img, cv_keypoints, cv_descriptors);
+
+    // Check if the results are same.
     if (!DescriptorsAreSame(descriptors, cv_descriptors)) {
       LOG(INFO) << "Two descriptors are different.";
     }
   }
 }
+}  // namespace
+
+// Value defined in CMakeLists.txt file.
+static const std::string project_folder_path = PRJ_FOLDER_PATH;
 
 int main(int argc, char** argv) {
   google::ParseCommandLineFlags(&argc, &argv, true);
@@ -126,13 +143,14 @@ int main(int argc, char** argv) {
   FLAGS_stderrthreshold = google::GLOG_INFO;
   google::InitGoogleLogging(argv[0]);
 
+  std::string image_path = FLAGS_image_path;
+  if (FLAGS_image_path == "") {
+    image_path = project_folder_path + "/data/sample.jpg";
+  }
+
   LOG(INFO) << "OpenCV SIFT Test Started.";
 
-  // 1. Load Images.
-  cv::Mat img, gray_img;
-  img = cv::imread(FLAGS_image_path);
-
-  TestSiftFeatures(img);
+  TestSiftFeatures(image_path);
 
   LOG(INFO) << "OpenCV SIFT Test Finished.";
 
