@@ -18,7 +18,7 @@ FIND_PACKAGE(Gflags)
 FIND_PACKAGE(Eigen3)
 
 set(TARGET "sift_test")
-set(SRC src/sift_test.cc src/sift_detector.cc src/sift_descriptor.cc  src/sift_copy_org.cc)
+set(SRC src/sift_test.cc src/sift_detector.cc src/sift_descriptor.cc  src/sift_from_opencv.cc)
 
 # Generate Exe Files
 add_executable(${TARGET} ${SRC})

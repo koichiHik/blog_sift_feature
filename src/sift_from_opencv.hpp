@@ -41,8 +41,8 @@
 //
 //M*/
 
-#ifndef __OPENCV_COPY_ORG_XFEATURES2D_FEATURES_2D_HPP__
-#define __OPENCV_COPY_ORG_XFEATURES2D_FEATURES_2D_HPP__
+#ifndef __SIFT_FROM_OPENCV__
+#define __SIFT_FROM_OPENCV__
 
 #include "opencv2/features2d.hpp"
 
