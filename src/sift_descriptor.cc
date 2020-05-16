@@ -162,13 +162,12 @@ static T NormalizeValueForHistBins(const T value, const int num_hist_bins) {
   return normalized_value;
 }
 
-static int ComputeGradientForPrePatch(const float angle, const int pre_patch_size,
-                                      const float pre_patch_radius, const int final_patch_width,
-                                      const float radius, const Point2i pt, const Mat img,
-                                      std::vector<float>& RBin, std::vector<float>& CBin,
-                                      std::vector<float>& Ori, std::vector<float>& Mag,
-                                      std::vector<float>& W) {
-  int pix_cnt = 0;
+static void ComputeGradientForPrePatch(const float angle, const int pre_patch_size,
+                                       const float pre_patch_radius, const int final_patch_width,
+                                       const float radius, const Point2i pt, const Mat img,
+                                       std::vector<float>& RBin, std::vector<float>& CBin,
+                                       std::vector<float>& Ori, std::vector<float>& Mag,
+                                       std::vector<float>& W) {
   {
     float exp_scale = -1.f / (final_patch_width * final_patch_width * 0.5f);
 
@@ -181,9 +180,10 @@ static int ComputeGradientForPrePatch(const float angle, const int pre_patch_siz
     sin_t /= pre_patch_radius;
 
     // Prepare temporary buffer.
-    std::vector<float> X_(pre_patch_size, 0.0f), Y_(pre_patch_size, 0.0f);
+    std::vector<float> X(pre_patch_size, 0.0f), Y(pre_patch_size, 0.0f);
 
     // Compute gradients and weighted gradients of pixels around keypoint.
+    int pix_cnt = 0;
     for (int dy = -radius; dy <= radius; dy++) {
       for (int dx = -radius; dx <= radius; dx++) {
         // Rotate for keypoint orientation.
@@ -202,8 +202,8 @@ static int ComputeGradientForPrePatch(const float angle, const int pre_patch_siz
         if (-1 < final_patch_row && final_patch_row < final_patch_width && -1 < final_patch_col &&
             final_patch_col < final_patch_width && 0 < row && row < img.rows - 1 && 0 < col &&
             col < img.cols - 1) {
-          X_[pix_cnt] = (float)(img.at<sift_wt>(row, col + 1) - img.at<sift_wt>(row, col - 1));
-          Y_[pix_cnt] = (float)(img.at<sift_wt>(row - 1, col) - img.at<sift_wt>(row + 1, col));
+          X[pix_cnt] = (float)(img.at<sift_wt>(row, col + 1) - img.at<sift_wt>(row, col - 1));
+          Y[pix_cnt] = (float)(img.at<sift_wt>(row - 1, col) - img.at<sift_wt>(row + 1, col));
           RBin[pix_cnt] = final_patch_row;
           CBin[pix_cnt] = final_patch_col;
           W[pix_cnt] = (dx_rot * dx_rot + dy_rot * dy_rot) * exp_scale;
@@ -211,21 +211,26 @@ static int ComputeGradientForPrePatch(const float angle, const int pre_patch_siz
         }
       }
     }
-    cv::hal::fastAtan2(Y_.data(), X_.data(), Ori.data(), pix_cnt, true);
-    cv::hal::magnitude32f(X_.data(), Y_.data(), Mag.data(), pix_cnt);
+
+    X.resize(pix_cnt);
+    Y.resize(pix_cnt);
+    Ori.resize(pix_cnt);
+    Mag.resize(pix_cnt);
+    W.resize(pix_cnt);
+
+    cv::hal::fastAtan2(Y.data(), X.data(), Ori.data(), pix_cnt, true);
+    cv::hal::magnitude32f(X.data(), Y.data(), Mag.data(), pix_cnt);
     cv::hal::exp32f(W.data(), W.data(), pix_cnt);
   }
-  return pix_cnt;
 }
 
 static void UpdateHistogramBasedOnTriLinearInterpolation(
     const std::vector<float>& Mag, const std::vector<float>& W, const std::vector<float>& RBin,
-    const std::vector<float>& CBin, const std::vector<float>& Ori, const int pix_cnt,
-    const float angle, const int final_ori_hist_bins, const int final_patch_width,
-    std::vector<float>& hist) {
+    const std::vector<float>& CBin, const std::vector<float>& Ori, const float angle,
+    const int final_ori_hist_bins, const int final_patch_width, std::vector<float>& hist) {
   float bin_resolution = final_ori_hist_bins / 360.f;
 
-  for (int pix_idx = 0; pix_idx < pix_cnt; pix_idx++) {
+  for (int pix_idx = 0; pix_idx < Ori.size(); pix_idx++) {
     int row = cvFloor(RBin[pix_idx]);
     int col = cvFloor(CBin[pix_idx]);
     int ori = cvFloor((Ori[pix_idx] - angle) * bin_resolution);
@@ -349,13 +354,12 @@ static void ComputeSIFTDescriptor(const Mat& img, Point2f ptf, float angle, floa
       RBin(pre_patch_size, 0.0f), CBin(pre_patch_size, 0.0f), hist(final_hist_size, 0.0f);
 
   // 3. Computation for pre-patch element.
-  int pix_cnt = ComputeGradientForPrePatch(
-      angle, pre_patch_size, pre_patch_radius, final_patch_width, radius,
-      Point2i(cvRound(ptf.x), cvRound(ptf.y)), img, RBin, CBin, Ori, Mag, W);
+  ComputeGradientForPrePatch(angle, pre_patch_size, pre_patch_radius, final_patch_width, radius,
+                             Point2i(cvRound(ptf.x), cvRound(ptf.y)), img, RBin, CBin, Ori, Mag, W);
 
   // 4. Histogram update based on tri-linear interpolation.
-  UpdateHistogramBasedOnTriLinearInterpolation(Mag, W, RBin, CBin, Ori, pix_cnt, angle,
-                                               final_ori_hist_bins, final_patch_width, hist);
+  UpdateHistogramBasedOnTriLinearInterpolation(Mag, W, RBin, CBin, Ori, angle, final_ori_hist_bins,
+                                               final_patch_width, hist);
 
   // 5. Refine histogram.
   RefineHistogram(final_patch_width, final_ori_hist_bins, hist, dst);
