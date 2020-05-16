@@ -116,87 +116,37 @@
 #include <glog/logging.h>
 
 // Original
-#include "xfeatures2d_copy.hpp"
+#include "sift.hpp"
 
 using namespace cv;
+using namespace cv_copy;
 
-namespace cv_copy {
-
-/******************************* Defs and macros *****************************/
-
-// default width of descriptor histogram array
-static const int SIFT_DESCR_WIDTH = 4;
-
-// default number of bins per histogram in descriptor array
-static const int SIFT_DESCR_HIST_BINS = 8;
-
-// assumed gaussian blur for input image
-static const float SIFT_INIT_SIGMA = 0.5f;
-
-// width of border in which to ignore keypoints
-static const int SIFT_IMG_BORDER = 5;
-
-// maximum steps of keypoint interpolation before failure
-static const int SIFT_MAX_INTERP_STEPS = 5;
-
-// default number of bins in histogram for orientation assignment
-static const int SIFT_ORI_HIST_BINS = 36;
-
-// determines gaussian sigma for orientation assignment
-static const float SIFT_ORI_SIG_FCTR = 1.5f;
-
-// determines the radius of the region used in orientation assignment
-static const float SIFT_ORI_RADIUS = 3 * SIFT_ORI_SIG_FCTR;
-
-// orientation magnitude relative to max that results in new feature
-static const float SIFT_ORI_PEAK_RATIO = 0.8f;
-
-// determines the size of a single descriptor orientation histogram
-static const float SIFT_DESCR_SCL_FCTR = 3.f;
-
-// threshold on magnitude of elements of descriptor vector
-static const float SIFT_DESCR_MAG_THR = 0.2f;
-
-// factor used to convert floating-point descriptor to unsigned char
-static const float SIFT_INT_DESCR_FCTR = 512.f;
-
-// intermediate type used for DoG pyramids
-typedef float sift_wt;
-static const int SIFT_FIXPT_SCALE = 1;
+namespace {
 
 static Mat CreateInitialImage(const Mat& img, bool doubleImageSize, float sigma) {
   Mat gray, gray_fpt;
   if (img.channels() == 3 || img.channels() == 4) {
     cvtColor(img, gray, COLOR_BGR2GRAY);
-    gray.convertTo(gray_fpt, DataType<sift_wt>::type, SIFT_FIXPT_SCALE, 0);
+    gray.convertTo(gray_fpt, DataType<sift_wt>::type, Const::SIFT_FIXPT_SCALE, 0);
   } else {
-    img.convertTo(gray_fpt, DataType<sift_wt>::type, SIFT_FIXPT_SCALE, 0);
+    img.convertTo(gray_fpt, DataType<sift_wt>::type, Const::SIFT_FIXPT_SCALE, 0);
   }
 
   float sig_diff;
 
   if (doubleImageSize) {
-    sig_diff = sqrtf(std::max(sigma * sigma - SIFT_INIT_SIGMA * SIFT_INIT_SIGMA * 4, 0.01f));
+    sig_diff =
+        sqrtf(std::max(sigma * sigma - Const::SIFT_INIT_SIGMA * Const::SIFT_INIT_SIGMA * 4, 0.01f));
     Mat dbl;
     resize(gray_fpt, dbl, Size(gray_fpt.cols * 2, gray_fpt.rows * 2), 0, 0, INTER_LINEAR);
     GaussianBlur(dbl, dbl, Size(), sig_diff, sig_diff);
     return dbl;
   } else {
-    sig_diff = sqrtf(std::max(sigma * sigma - SIFT_INIT_SIGMA * SIFT_INIT_SIGMA, 0.01f));
+    sig_diff =
+        sqrtf(std::max(sigma * sigma - Const::SIFT_INIT_SIGMA * Const::SIFT_INIT_SIGMA, 0.01f));
     GaussianBlur(gray_fpt, gray_fpt, Size(), sig_diff, sig_diff);
     return gray_fpt;
   }
-}
-
-static void DisplayImage(const cv::Mat& img, const std::string& title, const int wait_time) {
-  double min_val, max_val;
-  cv::minMaxLoc(img, &min_val, &max_val);
-  cv::Mat tmp;
-
-  img.convertTo(tmp, CV_8UC1, 255.0 / (max_val - min_val), -255.0 * min_val / (max_val - min_val));
-  cv::minMaxLoc(tmp, &min_val, &max_val);
-  cv::imshow(title, tmp);
-  cv::waitKey(wait_time);
 }
 
 struct KeyPoint12_LessThan {
@@ -302,35 +252,18 @@ class BuildDiffOfGaussianPyramid : public ParallelLoopBody {
   std::vector<Mat>& diff_of_gaussian_pyramid_;
 };
 
-// Computes a gradient orientation histogram at a specified pixel
-static float ComputeOrientationHistogram(const Mat& img, const Point2i& pt, int radius, float sigma,
-                                         float* hist, int num_hist_bins) {
-  int len = (radius * 2 + 1) * (radius * 2 + 1);
-  float expf_scale = -1.f / (2.f * sigma * sigma);
-
-  // Adjusting memory space.
-  AutoBuffer<float> buf(len * 4 + num_hist_bins + 4);
-  // Gradient (Temporary.)
-  float* X = buf.data();
-  float* Y = X + len;
-
-  // Magnitude, orientation, weighted magnitude. (Final output.)
-  float* Mag = X;
-  float* Ori = Y + len;
-  float* W = Ori + len;
-
-  // Temporary histogram storage.
-  float* temphist = W + len + 2;
-
-  for (int bin = 0; bin < num_hist_bins; bin++) {
-    temphist[bin] = 0.f;
-  }
+static void ComputeValuesForPatch(const Mat& img, const Point2i& pt, const int radius,
+                                  const float sigma, std::vector<float>& Ori,
+                                  std::vector<float>& Mag, std::vector<float>& W) {
+  int patch_size = (radius * 2 + 1) * (radius * 2 + 1);
 
   // Loop for square that encircles keypoint.
-  int k = 0;
-
   // Compute gradient and magnitude.
   {
+    int kpt_cnt = 0;
+    std::vector<float> X(patch_size), Y(patch_size);
+    float expf_scale = -1.f / (2.f * sigma * sigma);
+
     for (int dy = -radius; dy <= radius; dy++) {
       int y = pt.y + dy;
       // Additional 1pix is necessary for difference.
@@ -345,45 +278,52 @@ static float ComputeOrientationHistogram(const Mat& img, const Point2i& pt, int 
         }
 
         // Gradient.
-        X[k] = (float)(img.at<sift_wt>(y, x + 1) - img.at<sift_wt>(y, x - 1));
-        Y[k] = (float)(img.at<sift_wt>(y - 1, x) - img.at<sift_wt>(y + 1, x));
-        W[k] = (dx * dx + dy * dy) * expf_scale;
-        k++;
+        X[kpt_cnt] = (float)(img.at<sift_wt>(y, x + 1) - img.at<sift_wt>(y, x - 1));
+        Y[kpt_cnt] = (float)(img.at<sift_wt>(y - 1, x) - img.at<sift_wt>(y + 1, x));
+        W[kpt_cnt] = (dx * dx + dy * dy) * expf_scale;
+        kpt_cnt++;
       }
     }
-  }
-  len = k;
 
+    W.resize(kpt_cnt);
+    X.resize(kpt_cnt);
+    Y.resize(kpt_cnt);
+    W.resize(kpt_cnt);
+    Ori.resize(kpt_cnt);
+    Mag.resize(kpt_cnt);
+
+    // Compute necessary buffer.
+    cv::hal::exp32f(W.data(), W.data(), kpt_cnt);
+    cv::hal::fastAtan2(Y.data(), X.data(), Ori.data(), kpt_cnt, true);
+    cv::hal::magnitude32f(X.data(), Y.data(), Mag.data(), kpt_cnt);
+  }
+}
+
+static float ComputeHistogram(const int num_hist_bins, const int patch_size,
+                              const std::vector<float>& Ori, const std::vector<float>& Mag,
+                              const std::vector<float>& W, float* hist) {
   // Orientation Histogram Computation.
   float max_val;
   {
+    std::vector<float> temphist(patch_size * 2, 0.0f);
     // Compute gradient values, orientations and the weights over the pixel neighborhood.
-    cv::hal::exp32f(W, W, len);
-    cv::hal::fastAtan2(Y, X, Ori, len, true);
-    cv::hal::magnitude32f(X, Y, Mag, len);
-
-    k = 0;
-    for (; k < len; k++) {
+    for (int k = 0; k < Ori.size(); k++) {
       int bin = cvRound((num_hist_bins / 360.f) * Ori[k]);
-      if (bin >= num_hist_bins) {
-        bin -= num_hist_bins;
-      }
-      if (bin < 0) {
-        bin += num_hist_bins;
-      }
+      bin = (num_hist_bins + bin) % num_hist_bins;
       temphist[bin] += W[k] * Mag[k];
     }
 
-    // Smooth the histogram.
-    temphist[-1] = temphist[num_hist_bins - 1];
-    temphist[-2] = temphist[num_hist_bins - 2];
-    temphist[num_hist_bins] = temphist[0];
-    temphist[num_hist_bins + 1] = temphist[1];
-
     for (int bins = 0; bins < num_hist_bins; bins++) {
-      hist[bins] = (temphist[bins - 2] + temphist[bins + 2]) * (1.f / 16.f) +
-                   (temphist[bins - 1] + temphist[bins + 1]) * (4.f / 16.f) +
-                   temphist[bins] * (6.f / 16.f);
+      // Since histogram is circular.
+      int right_2_idx = (num_hist_bins + bins - 2) % num_hist_bins;
+      int right_1_idx = (num_hist_bins + bins - 1) % num_hist_bins;
+      int center_idx = bins;
+      int left_1_idx = (num_hist_bins + bins + 1) % num_hist_bins;
+      int left_2_idx = (num_hist_bins + bins + 2) % num_hist_bins;
+
+      hist[bins] = (temphist[right_2_idx] + temphist[left_2_idx]) * (1.f / 16.f) +
+                   (temphist[right_1_idx] + temphist[left_1_idx]) * (4.f / 16.f) +
+                   temphist[center_idx] * (6.f / 16.f);
     }
 
     max_val = hist[0];
@@ -391,6 +331,20 @@ static float ComputeOrientationHistogram(const Mat& img, const Point2i& pt, int 
       max_val = std::max(max_val, hist[bins]);
     }
   }
+
+  return max_val;
+}
+
+// Computes a gradient orientation histogram at a specified pixel
+static float ComputeOrientationHistogram(const Mat& img, const Point2i& pt, int radius, float sigma,
+                                         float* hist, int num_hist_bins) {
+  int patch_size = (radius * 2 + 1) * (radius * 2 + 1);
+
+  std::vector<float> Ori(patch_size), Mag(patch_size), W(patch_size);
+  ComputeValuesForPatch(img, pt, radius, sigma, Ori, Mag, W);
+
+  // Compute orientation histogram.
+  float max_val = ComputeHistogram(num_hist_bins, patch_size, Ori, Mag, W, hist);
 
   return max_val;
 }
@@ -429,6 +383,18 @@ static Matx33f ComputeHessianOfDoG(const int row, const int col, const float sec
   return H;
 }
 
+static void CompensateInitialScalingToOriginalImage(std::vector<SiftKeyPoint>& keypoints,
+                                                    int first_octave_idx) {
+  // Adjust keypoint scale wrt first octave setting we apply.
+  for (size_t i = 0; i < keypoints.size(); i++) {
+    SiftKeyPoint& kpt = keypoints[i];
+    float scale = std::pow(2.0, first_octave_idx);
+    kpt.octave = kpt.octave + first_octave_idx;
+    kpt.pt *= scale;
+    kpt.size *= scale;
+  }
+}
+
 static bool RefineKeyPointLocationIntoSubPixel(
     const int num_split_in_octave, const int octv, const float contrast_threshold,
     const float edge_threshold, const float sigma, const float deriv_scale,
@@ -436,8 +402,8 @@ static bool RefineKeyPointLocationIntoSubPixel(
     const std::vector<Mat>& diff_of_gaussian_pyr, Vec3i& X, Vec3f& dX) {
   // Copy into modifiable buffer.
 
-  for (int i = 0; i <= SIFT_MAX_INTERP_STEPS; i++) {
-    if (i >= SIFT_MAX_INTERP_STEPS) {
+  for (int i = 0; i <= Const::SIFT_MAX_INTERP_STEPS; i++) {
+    if (i >= Const::SIFT_MAX_INTERP_STEPS) {
       return false;
     }
 
@@ -461,9 +427,9 @@ static bool RefineKeyPointLocationIntoSubPixel(
 
     X = X + Vec3i(cvRound(dX[0]), cvRound(dX[1]), cvRound(dX[2]));
 
-    if (X[2] < 1 || X[2] > num_split_in_octave || X[0] < SIFT_IMG_BORDER ||
-        X[0] >= mid_dog.cols - SIFT_IMG_BORDER || X[1] < SIFT_IMG_BORDER ||
-        X[1] >= mid_dog.rows - SIFT_IMG_BORDER) {
+    if (X[2] < 1 || X[2] > num_split_in_octave || X[0] < Const::SIFT_IMG_BORDER ||
+        X[0] >= mid_dog.cols - Const::SIFT_IMG_BORDER || X[1] < Const::SIFT_IMG_BORDER ||
+        X[1] >= mid_dog.rows - Const::SIFT_IMG_BORDER) {
       return false;
     }
   }
@@ -521,7 +487,7 @@ static bool RefineLocalExtremaIntoSubPixel(const std::vector<Mat>& diff_of_gauss
                                            int& col, int num_split_in_octave,
                                            float contrast_threshold, float edge_threshold,
                                            float sigma) {
-  const float img_scale = 1.f / (255 * SIFT_FIXPT_SCALE);
+  const float img_scale = 1.f / (255 * Const::SIFT_FIXPT_SCALE);
   const float deriv_scale = img_scale * 0.5f;
   const float second_deriv_scale = img_scale;
   const float cross_deriv_scale = img_scale * 0.25f;
@@ -574,23 +540,15 @@ static T NormalizeValueForHistBins(const T value, const int num_hist_bins) {
   return normalized_value;
 }
 
-static void ComputeOrientationForKeyPoint(const int oct_idx_, const int num_split_in_octave_,
-                                          const int cand_row, const int cand_col, const int layer,
-                                          const std::vector<Mat> gaussian_pyramid_,
-                                          const int num_hist_bins, float* hist, SiftKeyPoint& kpt,
-                                          std::vector<SiftKeyPoint>* tls_kpts) {
-  // Compute orientation.
-  float scl_octv = kpt.size * 0.5f / (1 << oct_idx_);
-
-  float orientation_max_val = ComputeOrientationHistogram(
-      gaussian_pyramid_[oct_idx_ * (num_split_in_octave_ + 3) + layer], Point2i(cand_col, cand_row),
-      cvRound(SIFT_ORI_RADIUS * scl_octv), SIFT_ORI_SIG_FCTR * scl_octv, hist, num_hist_bins);
-
+static void ComputeRepresentativeOrientationForKeyPoint(const int num_hist_bins,
+                                                        const float orientation_max_val,
+                                                        const float* hist, SiftKeyPoint kpt,
+                                                        std::vector<SiftKeyPoint>* tls_kpts) {
   // Compute threshold above which the orientation will be adopted.
-  float orientation_threshold = (float)(orientation_max_val * SIFT_ORI_PEAK_RATIO);
+  float orientation_threshold = (float)(orientation_max_val * Const::SIFT_ORI_PEAK_RATIO);
   for (int cur_bin = 0; cur_bin < num_hist_bins; cur_bin++) {
-    int left_bin = 0 < cur_bin ? cur_bin - 1 : num_hist_bins - 1;
-    int right_bin = cur_bin < num_hist_bins - 1 ? cur_bin + 1 : 0;
+    int left_bin = (num_hist_bins + cur_bin - 1) % num_hist_bins;
+    int right_bin = (num_hist_bins + cur_bin + 1) % num_hist_bins;
 
     // Peak check.
     if (!(hist[left_bin] < hist[cur_bin] && hist[right_bin] < hist[cur_bin])) {
@@ -614,6 +572,23 @@ static void ComputeOrientationForKeyPoint(const int oct_idx_, const int num_spli
     }
     { tls_kpts->push_back(kpt); }
   }
+}
+
+static void ComputeOrientationForKeyPoint(const int oct_idx_, const int num_split_in_octave_,
+                                          const int cand_row, const int cand_col, const int layer,
+                                          const std::vector<Mat> gaussian_pyramid_,
+                                          const int num_hist_bins, float* hist, SiftKeyPoint& kpt,
+                                          std::vector<SiftKeyPoint>* tls_kpts) {
+  // Compute orientation.
+  float scl_octv = kpt.size * 0.5f / (1 << oct_idx_);
+
+  float orientation_max_val = ComputeOrientationHistogram(
+      gaussian_pyramid_[oct_idx_ * (num_split_in_octave_ + 3) + layer], Point2i(cand_col, cand_row),
+      cvRound(Const::SIFT_ORI_RADIUS * scl_octv), Const::SIFT_ORI_SIG_FCTR * scl_octv, hist,
+      num_hist_bins);
+
+  ComputeRepresentativeOrientationForKeyPoint(num_hist_bins, orientation_max_val, hist, kpt,
+                                              tls_kpts);
 }
 
 class FindScaleSpaceExtremaComputer : public ParallelLoopBody {
@@ -649,7 +624,7 @@ class FindScaleSpaceExtremaComputer : public ParallelLoopBody {
 
     std::vector<SiftKeyPoint>* tls_kpts = tls_kpts_struct.get();
 
-    static const int num_hist_bins = SIFT_ORI_HIST_BINS;
+    static const int num_hist_bins = Const::SIFT_ORI_HIST_BINS;
     float hist[num_hist_bins];
     SiftKeyPoint kpt;
     // Outer loop is for row.
@@ -659,7 +634,7 @@ class FindScaleSpaceExtremaComputer : public ParallelLoopBody {
       const sift_wt* nextptr = next.ptr<sift_wt>(row);
 
       // Inner loop is for col.
-      for (int col = SIFT_IMG_BORDER; col < cols_ - SIFT_IMG_BORDER; col++) {
+      for (int col = Const::SIFT_IMG_BORDER; col < cols_ - Const::SIFT_IMG_BORDER; col++) {
         sift_wt val = currptr[col];
 
         // Find local extrema with pixel accuracy.
@@ -735,376 +710,56 @@ class FindScaleSpaceExtremaComputer : public ParallelLoopBody {
   TLSData<std::vector<SiftKeyPoint> >& tls_kpts_struct;
 };
 
-static int ComputeGradientForPrePatch(const float angle, const float pre_patch_radius,
-                                      const int final_patch_width, const float radius,
-                                      const Point2i pt, const Mat img, float X[], float Y[],
-                                      float RBin[], float CBin[], float Ori[], float Mag[],
-                                      float W[]) {
-  int pix_cnt = 0;
-  {
-    float exp_scale = -1.f / (final_patch_width * final_patch_width * 0.5f);
+}  // namespace
 
-    // For coordinate transform.
-    float cos_t = cosf(angle * (float)(CV_PI / 180));
-    float sin_t = sinf(angle * (float)(CV_PI / 180));
-
-    // Division by pre_patch_radius for length normalizing.
-    cos_t /= pre_patch_radius;
-    sin_t /= pre_patch_radius;
-
-    // Compute gradients and weighted gradients of pixels around keypoint.
-    for (int dy = -radius; dy <= radius; dy++) {
-      for (int dx = -radius; dx <= radius; dx++) {
-        // Rotate for keypoint orientation.
-        float dx_rot = (dx * cos_t - dy * sin_t);
-        float dy_rot = (dx * sin_t + dy * cos_t);
-
-        // Calculate sample's histogram array coords rotated relative to ori.
-        // Subtract 0.5 so samples that fall e.g. in the center of row 1 (i.e.
-        // r_rot = 1.5) have full weight placed in row 1 after interpolation.
-
-        // Compute location in final patch coordinate.
-        float final_patch_col = dx_rot + final_patch_width / 2 - 0.5f;
-        float final_patch_row = dy_rot + final_patch_width / 2 - 0.5f;
-        int row = pt.y + dy, col = pt.x + dx;
-
-        if (-1 < final_patch_row && final_patch_row < final_patch_width && -1 < final_patch_col &&
-            final_patch_col < final_patch_width && 0 < row && row < img.rows - 1 && 0 < col &&
-            col < img.cols - 1) {
-          X[pix_cnt] = (float)(img.at<sift_wt>(row, col + 1) - img.at<sift_wt>(row, col - 1));
-          Y[pix_cnt] = (float)(img.at<sift_wt>(row - 1, col) - img.at<sift_wt>(row + 1, col));
-          RBin[pix_cnt] = final_patch_row;
-          CBin[pix_cnt] = final_patch_col;
-          W[pix_cnt] = (dx_rot * dx_rot + dy_rot * dy_rot) * exp_scale;
-          pix_cnt++;
-        }
-      }
-    }
-    cv::hal::fastAtan2(Y, X, Ori, pix_cnt, true);
-    cv::hal::magnitude32f(X, Y, Mag, pix_cnt);
-    cv::hal::exp32f(W, W, pix_cnt);
-  }
-  return pix_cnt;
-}
-
-static void UpdateHistogramBasedOnTriLinearInterpolation(
-    const float Mag[], const float W[], const float RBin[], const float CBin[], const float Ori[],
-    const int pix_cnt, const float angle, const int final_ori_hist_bins,
-    const int final_patch_width, float hist[]) {
-  float bin_resolution = final_ori_hist_bins / 360.f;
-
-  for (int pix_idx = 0; pix_idx < pix_cnt; pix_idx++) {
-    int row = cvFloor(RBin[pix_idx]);
-    int col = cvFloor(CBin[pix_idx]);
-    int ori = cvFloor((Ori[pix_idx] - angle) * bin_resolution);
-
-    float d_row = RBin[pix_idx] - row;
-    float d_col = CBin[pix_idx] - col;
-    float d_ori = (Ori[pix_idx] - angle) * bin_resolution - ori;
-
-    // Angle normalization.
-    if (ori < 0) {
-      ori += final_ori_hist_bins;
-    }
-    if (final_ori_hist_bins <= ori) {
-      ori -= final_ori_hist_bins;
-    }
-
-    // Tri-linear interpolation before histogram update.
-    float mag = Mag[pix_idx] * W[pix_idx];
-    float v_r1 = mag * d_row;
-    float v_r0 = mag - v_r1;
-    float v_rc11 = v_r1 * d_col;
-    float v_rc10 = v_r1 - v_rc11;
-    float v_rc01 = v_r0 * d_col;
-    float v_rc00 = v_r0 - v_rc01;
-    float v_rco111 = v_rc11 * d_ori;
-    float v_rco110 = v_rc11 - v_rco111;
-    float v_rco101 = v_rc10 * d_ori;
-    float v_rco100 = v_rc10 - v_rco101;
-    float v_rco011 = v_rc01 * d_ori;
-    float v_rco010 = v_rc01 - v_rco011;
-    float v_rco001 = v_rc00 * d_ori;
-    float v_rco000 = v_rc00 - v_rco001;
-
-    // Histogram update.
-    int idx = ((row + 1) * (final_patch_width + 2) + col + 1) * (final_ori_hist_bins + 2) + ori;
-
-    // This buffer has 3 dimensional structure. (X x Y x Ori)
-    // (row, col, ori)
-    hist[idx] += v_rco000;
-    // (row, col, ori + 1)
-    hist[idx + 1] += v_rco001;
-    // (row, col + 1, ori)
-    hist[idx + (final_ori_hist_bins + 2)] += v_rco010;
-    // (row, col + 1, ori + 1)
-    hist[idx + (final_ori_hist_bins + 2) + 1] += v_rco011;
-    // (row + 1, col, ori)
-    hist[idx + (final_patch_width + 2) * (final_ori_hist_bins + 2)] += v_rco100;
-    // (row + 1, col, ori + 1)
-    hist[idx + (final_patch_width + 2) * (final_ori_hist_bins + 2) + 1] += v_rco101;
-    // (row + 1, col + 1, ori)
-    hist[idx + ((final_patch_width + 2) + 1) * (final_ori_hist_bins + 2)] += v_rco110;
-    // (row + 1, col + 1, ori + 1)
-    hist[idx + ((final_patch_width + 2) + 1) * (final_ori_hist_bins + 2) + 1] += v_rco111;
-  }
-}
-
-static void InitializeBuffer(const int pre_patch_size, const int final_patch_width,
-                             const int final_hist_size, const int final_ori_hist_bins,
-                             AutoBuffer<float>& buf, float** X, float** Y, float** Mag, float** Ori,
-                             float** W, float** RBin, float** CBin, float** hist) {
-  buf.allocate(pre_patch_size * 6 + final_hist_size);
-
-  // Elements to be calculated for each prepatch.
-  *X = buf.data();
-  *Y = *X + pre_patch_size;
-  *Mag = *Y;
-  *Ori = *Mag + pre_patch_size;
-  *W = *Ori + pre_patch_size;
-  *RBin = *W + pre_patch_size;
-  *CBin = *RBin + pre_patch_size;
-  *hist = *CBin + pre_patch_size;
-
-  // Initialize histogram part of the buffer..　
-  for (int row = 0; row < final_patch_width + 2; row++) {
-    for (int col = 0; col < final_patch_width + 2; col++) {
-      for (int ori = 0; ori < final_ori_hist_bins + 2; ori++) {
-        (*hist)[(row * (final_patch_width + 2) + col) * (final_ori_hist_bins + 2) + ori] = 0.f;
-      }
-    }
-  }
-}
-
-static void RefineHistogram(const int final_patch_width, const int final_ori_hist_bins, float* hist,
-                            float* dst) {
-  // Finalize histogram, since the orientation histograms are circular.
-  for (int row = 0; row < final_patch_width; row++) {
-    for (int col = 0; col < final_patch_width; col++) {
-      int idx = ((row + 1) * (final_patch_width + 2) + (col + 1)) * (final_ori_hist_bins + 2);
-
-      hist[idx] += hist[idx + final_ori_hist_bins];
-      hist[idx + 1] += hist[idx + final_ori_hist_bins + 1];
-
-      // Loop for orientation histogram of (row, col)
-      for (int ori = 0; ori < final_ori_hist_bins; ori++) {
-        dst[(row * final_patch_width + col) * final_ori_hist_bins + ori] = hist[idx + ori];
-      }
-    }
-  }
-
-  // Refine histogram.
-  {
-    // Apply hysterisis thresholding and scale the result for easy converion to byte array.
-    int size = final_patch_width * final_patch_width * final_ori_hist_bins;
-
-    // Find thresh.
-    float thresh;
-    {
-      float total_norm = 0;
-      for (int k = 0; k < size; k++) {
-        total_norm += dst[k] * dst[k];
-      }
-      thresh = std::sqrt(total_norm) * SIFT_DESCR_MAG_THR;
-    }
-
-    // Normalize the result.
-    {
-      float total_norm = 0;
-      for (int k = 0; k < size; k++) {
-        float val = std::min(dst[k], thresh);
-        dst[k] = val;
-        total_norm += val * val;
-      }
-      total_norm = SIFT_INT_DESCR_FCTR / std::max(std::sqrt(total_norm), FLT_EPSILON);
-
-      for (int k = 0; k < size; k++) {
-        dst[k] = saturate_cast<uchar>(dst[k] * total_norm);
-      }
-    }
-  }
-}
-
-// Compute sift descriptor.
-static void ComputeSIFTDescriptor(const Mat& img, Point2f ptf, float angle, float scl,
-                                  int final_patch_width, int final_ori_hist_bins, float* dst) {
-  // Constant value cauculation.
-  int radius, pre_patch_size, final_hist_size;
-  float pre_patch_radius;
-  {
-    pre_patch_radius = SIFT_DESCR_SCL_FCTR * scl;
-    // Compute radius.
-    float sqrt2 = 1.4142135623730951f;
-    radius = cvRound(pre_patch_radius * sqrt2 * (final_patch_width + 1) * 0.5f);
-    // Clip the radius to the diagonal of the image to avoid autobuffer too large exception
-    radius =
-        std::min(radius, (int)sqrt(((double)img.cols) * img.cols + ((double)img.rows) * img.rows));
-    pre_patch_size = (radius * 2 + 1) * (radius * 2 + 1);
-    final_hist_size = (final_patch_width + 2) * (final_patch_width + 2) * (final_ori_hist_bins + 2);
-  }
-
-  // Prepare buffer.
-  AutoBuffer<float> buf;
-  float *X, *Y, *Mag, *Ori, *W, *RBin, *CBin, *hist;
-  InitializeBuffer(pre_patch_size, final_patch_width, final_hist_size, final_ori_hist_bins, buf, &X,
-                   &Y, &Mag, &Ori, &W, &RBin, &CBin, &hist);
-
-  // Computation for pre-patch element.
-  int pix_cnt = ComputeGradientForPrePatch(angle, pre_patch_radius, final_patch_width, radius,
-                                           Point2i(cvRound(ptf.x), cvRound(ptf.y)), img, X, Y, RBin,
-                                           CBin, Ori, Mag, W);
-
-  // Histogram update based on tri-linear interpolation.
-  UpdateHistogramBasedOnTriLinearInterpolation(Mag, W, RBin, CBin, Ori, pix_cnt, angle,
-                                               final_ori_hist_bins, final_patch_width, hist);
-
-  // Refine histogram.
-  RefineHistogram(final_patch_width, final_ori_hist_bins, hist, dst);
-
-}  // namespace cv_copy
-
-class ComputeDescriptorComputer : public ParallelLoopBody {
- public:
-  ComputeDescriptorComputer(const std::vector<Mat>& _gpyr,
-                            const std::vector<SiftKeyPoint>& _keypoints, Mat& _descriptors,
-                            int num_split_in_octave, int _firstOctave)
-      : gpyr(_gpyr),
-        keypoints(_keypoints),
-        descriptors(_descriptors),
-        num_split_in_octave_(num_split_in_octave),
-        firstOctave(_firstOctave) {}
-
-  void operator()(const cv::Range& range) const {
-    const int kpt_start = range.start;
-    const int kpt_end = range.end;
-
-    static const int desc_patch_width = SIFT_DESCR_WIDTH;
-    static const int desc_hist_bins = SIFT_DESCR_HIST_BINS;
-
-    for (int idx = kpt_start; idx < kpt_end; idx++) {
-      SiftKeyPoint kpt = keypoints[idx];
-      float scale = std::pow(2.0, -kpt.octave);
-      float size = kpt.size * scale;
-      Point2f ptf(kpt.pt.x * scale, kpt.pt.y * scale);
-      const Mat& img = gpyr[(kpt.octave - firstOctave) * (num_split_in_octave_ + 3) + kpt.layer];
-      float angle = 360.f - kpt.angle;
-      if (std::abs(angle - 360.f) < FLT_EPSILON) {
-        angle = 0.f;
-      }
-      float* p_desc = descriptors.ptr<float>((int)idx);
-      ComputeSIFTDescriptor(img, ptf, angle, size * 0.5f, desc_patch_width, desc_hist_bins, p_desc);
-    }
-  }
-
- private:
-  const std::vector<Mat>& gpyr;
-  const std::vector<SiftKeyPoint>& keypoints;
-  Mat& descriptors;
-  int num_split_in_octave_;
-  int firstOctave;
-};
-
-static void ComputeDescriptors(const std::vector<Mat>& gaussian_pyramid,
-                               const std::vector<SiftKeyPoint>& keypoints, Mat& descriptors,
-                               int num_split_in_octave, int first_octave) {
-  // Parallelize with respect to keypoints.
-  parallel_for_(Range(0, static_cast<int>(keypoints.size())),
-                ComputeDescriptorComputer(gaussian_pyramid, keypoints, descriptors,
-                                          num_split_in_octave, first_octave));
-}
-
-SIFT::SIFT(int num_features, int num_split_in_octave, double contrast_threshold,
-           double edge_threshold, double _sigma)
-    : num_features_(num_features),
-      num_split_in_octave_(num_split_in_octave),
-      num_gaussian_in_octave_(num_split_in_octave + 3),
-      num_diff_of_gaussian_in_octave_(num_split_in_octave + 2),
-      contrast_threshold_(contrast_threshold),
-      edge_threshold_(edge_threshold),
-      sigma(_sigma) {}
+namespace cv_copy {
 
 void SIFT::Detect(cv::Mat& image, std::vector<SiftKeyPoint>& keypoints) {
   int first_octave_idx = -1;
 
-  // Initialize Image.
+  // 1. Initialize image.
   bool double_image_size = true;
-  Mat base_image = CreateInitialImage(image, double_image_size, (float)sigma);
+  Mat base_image = CreateInitialImage(image, double_image_size, (float)sigma_);
 
-  // Compute number of octave that is solely computed from image size.
+  // 2. Compute number of octave that is solely computed from image size.
   double log2_num = std::log((double)std::min(base_image.cols, base_image.rows)) / std::log(2.);
   int num_octaves = cvRound(log2_num - 2) + 1;
 
-  // Build Gaussian Pyramid.
+  // 3. Build Gaussian pyramid.
   std::vector<Mat> gaussian_pyr;
   BuildGaussianPyramid(base_image, gaussian_pyr, num_octaves);
 
-  // Build Difference of Gaussian Pyramid.
+  // 4. Build difference of Gaussian pyramid.
   std::vector<Mat> diff_of_gaussian_pyr;
   BuildDifferenceOfGaussianPyramid(gaussian_pyr, diff_of_gaussian_pyr);
 
-  // Find Scale Space Extrema in Difference of Gaussian Pyramid.
+  // 5. Find scale space extrema in difference of Gaussian pyramid.
   FindScaleSpaceExtrema(gaussian_pyr, diff_of_gaussian_pyr, keypoints);
 
-  // Remove Duplicated Key Point.
+  // 6. Remove duplicated key point.
   RemoveDuplicateSorted(keypoints);
 
-  // If maximum number supeciried.
+  // 7. If maximum number supeciried.
   if (num_features_ > 0) {
     RetainBest(keypoints, num_features_);
   }
 
-  // Update keypoints.
-  for (size_t i = 0; i < keypoints.size(); i++) {
-    SiftKeyPoint& kpt = keypoints[i];
-    float scale = std::pow(2.0, first_octave_idx);
-    kpt.octave = kpt.octave + first_octave_idx;
-    kpt.pt *= scale;
-    kpt.size *= scale;
-  }
+  // 8. Compensating doubling of iamge at the beginning.
+  CompensateInitialScalingToOriginalImage(keypoints, first_octave_idx);
 }
 
-void SIFT::Compute(cv::Mat& image, std::vector<SiftKeyPoint>& keypoints, cv::Mat& descriptors) {
-  // Initialization based on keypoints information.
-  int first_octave = 0;
-  int total_octaves;
-  Mat base;
-  {
-    // Structure information extracted from keypoints.
-    int last_octave = INT_MIN;
-    for (auto kpt : keypoints) {
-      first_octave = std::min(first_octave, kpt.octave);
-      last_octave = std::max(last_octave, kpt.octave);
-    }
-    total_octaves = last_octave - first_octave + 1;
-
-    // Create initial image from the given.
-    base = CreateInitialImage(image, first_octave < 0, (float)sigma);
-  }
-
-  // Build Gaussian Pyramid.
-  std::vector<Mat> gaussian_pyramid;
-  { BuildGaussianPyramid(base, gaussian_pyramid, total_octaves); }
-
-  // Compute descriptor for each keypoint.
-  {
-    descriptors.create((int)keypoints.size(), DescriptorSize(), CV_32F);
-    ComputeDescriptors(gaussian_pyramid, keypoints, descriptors, num_split_in_octave_,
-                       first_octave);
-  }
-}
-
-void SIFT::BuildGaussianPyramid(const Mat& base_image, std::vector<Mat>& pyramid, int nOctaves,
-                                bool debug_display) const {
+void SIFT::BuildGaussianPyramid(const Mat& base_image, std::vector<Mat>& pyramid,
+                                int num_octaves) const {
   // Compute sigmas for gaussian images in octave.
   // precompute Gaussian sigmas using the following formula:
   //  \sigma_{total}^2 = \sigma_{i}^2 + \sigma_{i-1}^2
   std::vector<double> sigmas_for_gaussian(num_gaussian_in_octave_);
   {
-    sigmas_for_gaussian[0] = sigma;
+    sigmas_for_gaussian[0] = sigma_;
     double k = std::pow(2., 1. / num_split_in_octave_);
     // Loop for gaussian images in octave.
     for (int i = 1; i < num_gaussian_in_octave_; i++) {
-      double sigma_previous = std::pow(k, (double)(i - 1)) * sigma;
+      double sigma_previous = std::pow(k, (double)(i - 1)) * sigma_;
       double sigma_total = sigma_previous * k;
       sigmas_for_gaussian[i] =
           std::sqrt(sigma_total * sigma_total - sigma_previous * sigma_previous);
@@ -1113,8 +768,8 @@ void SIFT::BuildGaussianPyramid(const Mat& base_image, std::vector<Mat>& pyramid
 
   // Building Pyramid. Loop for all octave and all layer inside them.
   {
-    pyramid.resize(nOctaves * (num_gaussian_in_octave_));
-    for (int oct_idx = 0; oct_idx < nOctaves; oct_idx++) {
+    pyramid.resize(num_octaves * (num_gaussian_in_octave_));
+    for (int oct_idx = 0; oct_idx < num_octaves; oct_idx++) {
       for (int layer_idx = 0; layer_idx < num_gaussian_in_octave_; layer_idx++) {
         Mat& dst = pyramid[oct_idx * (num_gaussian_in_octave_) + layer_idx];
         if (oct_idx == 0 && layer_idx == 0) {
@@ -1129,17 +784,13 @@ void SIFT::BuildGaussianPyramid(const Mat& base_image, std::vector<Mat>& pyramid
           GaussianBlur(src, dst, Size(), sigmas_for_gaussian[layer_idx],
                        sigmas_for_gaussian[layer_idx]);
         }
-        if (debug_display) {
-          DisplayImage(dst, "Pyramid", 0);
-        }
       }
     }
   }
 }
 
 void SIFT::BuildDifferenceOfGaussianPyramid(const std::vector<Mat>& gaussian_pyramid,
-                                            std::vector<Mat>& diff_of_gaussian_pyramid,
-                                            bool debug_display) const {
+                                            std::vector<Mat>& diff_of_gaussian_pyramid) const {
   // Num of images in octave.
   int num_octaves = (int)gaussian_pyramid.size() / (num_gaussian_in_octave_);
 
@@ -1150,13 +801,6 @@ void SIFT::BuildDifferenceOfGaussianPyramid(const std::vector<Mat>& gaussian_pyr
   parallel_for_(Range(0, num_octaves * num_diff_of_gaussian_in_octave_),
                 BuildDiffOfGaussianPyramid(num_gaussian_in_octave_, num_diff_of_gaussian_in_octave_,
                                            gaussian_pyramid, diff_of_gaussian_pyramid));
-
-  // Display intermediate results.
-  if (debug_display) {
-    for (auto dog_img : diff_of_gaussian_pyramid) {
-      DisplayImage(dog_img, "Difference of Gaussian", 0);
-    }
-  }
 }
 
 //
@@ -1167,7 +811,7 @@ void SIFT::FindScaleSpaceExtrema(const std::vector<Mat>& gaussian_pyramid,
                                  std::vector<SiftKeyPoint>& keypoints) const {
   const int num_octave = (int)gaussian_pyramid.size() / (num_gaussian_in_octave_);
   const int threshold =
-      cvFloor(0.5 * contrast_threshold_ / num_split_in_octave_ * 255 * SIFT_FIXPT_SCALE);
+      cvFloor(0.5 * contrast_threshold_ / num_split_in_octave_ * 255 * Const::SIFT_FIXPT_SCALE);
 
   keypoints.clear();
   TLSData<std::vector<SiftKeyPoint> > tls_kpts_struct;
@@ -1183,10 +827,10 @@ void SIFT::FindScaleSpaceExtrema(const std::vector<Mat>& gaussian_pyramid,
       const int rows = diff_of_gaussian.rows, cols = diff_of_gaussian.cols;
 
       // Pararellization for each row.
-      parallel_for_(Range(SIFT_IMG_BORDER, rows - SIFT_IMG_BORDER),
+      parallel_for_(Range(Const::SIFT_IMG_BORDER, rows - Const::SIFT_IMG_BORDER),
                     FindScaleSpaceExtremaComputer(oct_idx, split_idx, threshold, dog_idx, step,
                                                   cols, num_split_in_octave_, contrast_threshold_,
-                                                  edge_threshold_, sigma, gaussian_pyramid,
+                                                  edge_threshold_, sigma_, gaussian_pyramid,
                                                   diff_of_gaussian_pyramid, tls_kpts_struct));
     }
   }
@@ -1197,13 +841,5 @@ void SIFT::FindScaleSpaceExtrema(const std::vector<Mat>& gaussian_pyramid,
     keypoints.insert(keypoints.end(), kpt_vecs[i]->begin(), kpt_vecs[i]->end());
   }
 }
-
-int SIFT::DescriptorSize() const {
-  return SIFT_DESCR_WIDTH * SIFT_DESCR_WIDTH * SIFT_DESCR_HIST_BINS;
-}
-
-int SIFT::DescriptorType() const { return CV_32F; }
-
-int SIFT::DefaultNorm() const { return NORM_L2; }
 
 }  // namespace cv_copy

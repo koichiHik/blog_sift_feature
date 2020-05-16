@@ -40,8 +40,8 @@
 //
 //M*/
 
-#ifndef __OPENCV_COPY_XFEATURES2D_FEATURES_2D_HPP__
-#define __OPENCV_COPY_XFEATURES2D_FEATURES_2D_HPP__
+#ifndef __SIFT__HPP__
+#define __SIFT__HPP__
 
 // STL
 #include <iostream>
@@ -56,6 +56,50 @@ namespace cv_copy {
 
 using namespace cv;
 
+typedef float sift_wt;
+
+class Const {
+ public:
+  // default width of descriptor histogram array
+  static inline const int SIFT_DESCR_WIDTH = 4;
+
+  // default number of bins per histogram in descriptor array
+  static inline const int SIFT_DESCR_HIST_BINS = 8;
+
+  // assumed gaussian blur for input image
+  static inline const float SIFT_INIT_SIGMA = 0.5f;
+
+  // width of border in which to ignore keypoints
+  static inline const int SIFT_IMG_BORDER = 5;
+
+  // maximum steps of keypoint interpolation before failure
+  static inline const int SIFT_MAX_INTERP_STEPS = 5;
+
+  // default number of bins in histogram for orientation assignment
+  static inline const int SIFT_ORI_HIST_BINS = 36;
+
+  // determines gaussian sigma for orientation assignment
+  static inline const float SIFT_ORI_SIG_FCTR = 1.5f;
+
+  // determines the radius of the region used in orientation assignment
+  static inline const float SIFT_ORI_RADIUS = 3 * SIFT_ORI_SIG_FCTR;
+
+  // orientation magnitude relative to max that results in new feature
+  static inline const float SIFT_ORI_PEAK_RATIO = 0.8f;
+
+  // determines the size of a single descriptor orientation histogram
+  static inline const float SIFT_DESCR_SCL_FCTR = 3.f;
+
+  // threshold on magnitude of elements of descriptor vector
+  static inline const float SIFT_DESCR_MAG_THR = 0.2f;
+
+  // factor used to convert floating-point descriptor to unsigned char
+  static inline const float SIFT_INT_DESCR_FCTR = 512.f;
+
+  // intermediate type used for DoG pyramids
+  static inline const int SIFT_FIXPT_SCALE = 1;
+};
+
 class SiftKeyPoint : public KeyPoint {
  public:
   SiftKeyPoint() : layer(0){};
@@ -65,25 +109,33 @@ class SiftKeyPoint : public KeyPoint {
 class SIFT {
  public:
   explicit SIFT(int num_features = 0, int num_split_in_octave = 3, double contrast_threshold = 0.04,
-                double edge_threshold = 10, double sigma = 1.6);
+                double edge_threshold = 10, double sigma = 1.6)
+      : num_features_(num_features),
+        num_split_in_octave_(num_split_in_octave),
+        num_gaussian_in_octave_(num_split_in_octave + 3),
+        num_diff_of_gaussian_in_octave_(num_split_in_octave + 2),
+        contrast_threshold_(contrast_threshold),
+        edge_threshold_(edge_threshold),
+        sigma_(sigma){};
 
   void Detect(cv::Mat& image, std::vector<SiftKeyPoint>& keypoints);
 
   void Compute(cv::Mat& image, std::vector<SiftKeyPoint>& keypoints, cv::Mat& descriptors);
 
  protected:
-  void BuildGaussianPyramid(const Mat& base, std::vector<Mat>& pyr, int nOctaves,
-                            bool debug_display = false) const;
+  void BuildGaussianPyramid(const Mat& base, std::vector<Mat>& pyr, int num_octaves) const;
 
-  void BuildDifferenceOfGaussianPyramid(const std::vector<Mat>& gpyr, std::vector<Mat>& dogpyr,
-                                        bool debug_display = false) const;
+  void BuildDifferenceOfGaussianPyramid(const std::vector<Mat>& gpyr,
+                                        std::vector<Mat>& dogpyr) const;
 
   void FindScaleSpaceExtrema(const std::vector<Mat>& gauss_pyr, const std::vector<Mat>& dog_pyr,
                              std::vector<SiftKeyPoint>& keypoints) const;
 
-  int DescriptorSize() const;
-  int DescriptorType() const;
-  int DefaultNorm() const;
+  int DescriptorSize() const {
+    return Const::SIFT_DESCR_WIDTH * Const::SIFT_DESCR_WIDTH * Const::SIFT_DESCR_HIST_BINS;
+  };
+  int DescriptorType() const { return CV_32F; };
+  int DefaultNorm() const { return NORM_L2; };
 
  protected:
   int num_features_;
@@ -92,7 +144,7 @@ class SIFT {
   int num_diff_of_gaussian_in_octave_;
   double contrast_threshold_;
   double edge_threshold_;
-  double sigma;
+  double sigma_;
 };
 
 }  // namespace cv_copy

@@ -7,7 +7,6 @@
 #include <opencv2/core.hpp>
 #include <opencv2/highgui.hpp>
 #include <opencv2/imgproc.hpp>
-//#include <opencv2/xfeatures2d/nonfree.hpp>
 
 // Eigen
 #include <eigen3/Eigen/Core>
@@ -19,12 +18,23 @@
 #include <glog/logging.h>
 
 // Original
-#include "xfeatures2d_copy.hpp"
+#include "sift.hpp"
 #include "xfeatures2d_copy_org.hpp"
 
 using namespace cv_copy;
 
 DEFINE_string(image_path, "", "Path to the image.");
+
+static void DisplayImage(const cv::Mat& img, const std::string& title, const int wait_time) {
+  double min_val, max_val;
+  cv::minMaxLoc(img, &min_val, &max_val);
+  cv::Mat tmp;
+
+  img.convertTo(tmp, CV_8UC1, 255.0 / (max_val - min_val), -255.0 * min_val / (max_val - min_val));
+  cv::minMaxLoc(tmp, &min_val, &max_val);
+  cv::imshow(title, tmp);
+  cv::waitKey(wait_time);
+}
 
 template <typename T>
 void DrawKeyPointsAsCircles(const cv::Mat& img, const std::vector<T>& keypoints, cv::Mat& result) {
@@ -108,17 +118,6 @@ void TestSiftFeatures(cv::Mat& img) {
       LOG(INFO) << "Two descriptors are different.";
     }
   }
-
-  // cv::Mat comparison;
-  // cv::bitwise_xor(descriptors, cv_descriptors, comparison);
-  // LOG(INFO) << "If the result is same, the number should be zero... : "
-  //          << cv::countNonZero(comparison);
-
-  // cv::Mat result_img;
-  // DrawKeyPointsAsCircles(img, keypoints, result_img);
-  // cv::imshow("Original Image", img);
-  // cv::imshow("Result Image", result_img);
-  // cv::waitKey(0);
 }
 
 int main(int argc, char** argv) {
