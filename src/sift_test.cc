@@ -43,7 +43,7 @@ void DrawKeyPointsAsCircles(const cv::Mat& img, const std::vector<T>& keypoints,
   img.copyTo(result);
   for (auto pnt : keypoints) {
     cv::Point2i location(pnt.pt.x + 0.5, pnt.pt.y + 0.5);
-    cv::circle(result, location, static_cast<int>(pnt.size + 0.5f), cv::Scalar(0, 0, 255));
+    cv::circle(result, location, static_cast<int>(pnt.size + 0.5f), cv::Scalar(0, 255, 255), 2);
   }
 }
 
@@ -108,12 +108,20 @@ void TestSiftFeatures(const std::string& image_path) {
     cv::Ptr<cv_copy::xfeatures2d::SIFT> cv_sift_detector = cv_copy::xfeatures2d::SIFT::create();
     cv_sift_detector->detect(img, cv_keypoints);
 
+    cv::Mat test;
+    DrawKeyPointsAsCircles(img, keypoints, test);
+    cv::resize(test, test, cv::Size(), 0.5, 0.5);
+    cv::imshow("Test", test);
+    cv::waitKey(0);
+
     // Check if the results are same.
     if (!KeyPointsAreSame(cv_keypoints, keypoints)) {
       LOG(INFO) << "Two keypoints are different.";
+      return;
     }
 
     LOG(INFO) << "No of detected keypoints : " << keypoints.size();
+    LOG(INFO) << "Two keypoints are same.";
   }
 
   cv::Mat cv_descriptors, descriptors;
@@ -129,7 +137,9 @@ void TestSiftFeatures(const std::string& image_path) {
     // Check if the results are same.
     if (!DescriptorsAreSame(descriptors, cv_descriptors)) {
       LOG(INFO) << "Two descriptors are different.";
+      return;
     }
+    LOG(INFO) << "Two descriptors are same.";
   }
 }
 }  // namespace

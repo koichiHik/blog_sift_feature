@@ -108,6 +108,7 @@
 #include <iostream>
 
 // OpenCV
+#include <opencv2/core/utils/tls.hpp>
 #include <opencv2/core/hal/hal.hpp>
 #include <opencv2/imgproc.hpp>
 
@@ -465,7 +466,7 @@ class findScaleSpaceExtremaComputer : public ParallelLoopBody {
                                 double _edgeThreshold, double _sigma,
                                 const std::vector<Mat>& _gauss_pyr,
                                 const std::vector<Mat>& _dog_pyr,
-                                TLSData<std::vector<KeyPoint> >& _tls_kpts_struct)
+                                TLSDataAccumulator<std::vector<KeyPoint> >& _tls_kpts_struct)
 
       : o(_o),
         i(_i),
@@ -565,7 +566,7 @@ class findScaleSpaceExtremaComputer : public ParallelLoopBody {
   double sigma;
   const std::vector<Mat>& gauss_pyr;
   const std::vector<Mat>& dog_pyr;
-  TLSData<std::vector<KeyPoint> >& tls_kpts_struct;
+  TLSDataAccumulator<std::vector<KeyPoint> >& tls_kpts_struct;
 };
 
 //
@@ -578,7 +579,7 @@ void SIFT_Impl::findScaleSpaceExtrema(const std::vector<Mat>& gauss_pyr,
   const int threshold = cvFloor(0.5 * contrastThreshold / nOctaveLayers * 255 * SIFT_FIXPT_SCALE);
 
   keypoints.clear();
-  TLSData<std::vector<KeyPoint> > tls_kpts_struct;
+  TLSDataAccumulator<std::vector<KeyPoint> > tls_kpts_struct;
 
   for (int o = 0; o < nOctaves; o++)
     for (int i = 1; i <= nOctaveLayers; i++) {

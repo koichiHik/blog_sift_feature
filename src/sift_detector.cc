@@ -108,6 +108,7 @@
 // OpenCV
 #include <opencv2/core.hpp>
 #include <opencv2/core/hal/hal.hpp>
+#include <opencv2/core/utils/tls.hpp>
 #include <opencv2/features2d.hpp>
 #include <opencv2/highgui.hpp>
 #include <opencv2/imgproc.hpp>
@@ -598,7 +599,7 @@ class FindScaleSpaceExtremaComputer : public ParallelLoopBody {
                                 double edge_threshold, double sigma,
                                 const std::vector<Mat>& gaussian_pyramid,
                                 const std::vector<Mat>& diff_of_gaussian_pyramid,
-                                TLSData<std::vector<SiftKeyPoint> >& _tls_kpts_struct)
+                                TLSDataAccumulator<std::vector<SiftKeyPoint> >& _tls_kpts_struct)
 
       : oct_idx_(oct_idx),
         split_idx_(split_idx),
@@ -814,7 +815,9 @@ void SIFT::FindScaleSpaceExtrema(const std::vector<Mat>& gaussian_pyramid,
       cvFloor(0.5 * contrast_threshold_ / num_split_in_octave_ * 255 * Const::SIFT_FIXPT_SCALE);
 
   keypoints.clear();
-  TLSData<std::vector<SiftKeyPoint> > tls_kpts_struct;
+  //TLSData<std::vector<SiftKeyPoint> > tls_kpts_struct;
+  TLSDataAccumulator<std::vector<SiftKeyPoint> > tls_kpts_struct;
+
 
   // Loop for octave.
   for (int oct_idx = 0; oct_idx < num_octave; oct_idx++) {
